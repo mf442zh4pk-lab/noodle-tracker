@@ -15,7 +15,7 @@ import { initializeApp } from "firebase/app";
 import { getDatabase, ref, onValue, set, get } from "firebase/database";
 
 const firebaseConfig = {
-  apiKey:            "REPLACE_WITH_YOUR_API_KEY",
+  apiKey:            "AIzaSyCSpTz1NNiWBjsbVvsEP_OFwGbi2xlOjns",
   authDomain:        "REPLACE_WITH_YOUR_AUTH_DOMAIN",
   databaseURL:       "REPLACE_WITH_YOUR_DATABASE_URL",
   projectId:         "REPLACE_WITH_YOUR_PROJECT_ID",
