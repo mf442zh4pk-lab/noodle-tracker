@@ -1,26 +1,26 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { loadData, saveData, subscribeToData } from "./firebase";
 
-// ── DATA ──────────────────────────────────────────────────────────────────────
+// -- DATA ----------------------------------------------------------------------
 const PHASES = [
   {
-    id: "phase1", label: "0–3 Months", color: "#e8845c", emoji: "🌱", weeks: "8–12 weeks",
+    id: "phase1", label: "0-3 Months", color: "#e8845c", emoji: "\u{1F331}", weeks: "8-12 weeks",
     tasks: [
       { id: "p1_1", category: "Feeding",       text: "Feed 3x/day (puppy kibble, small breed)",     frequency: "daily" },
-      { id: "p1_2", category: "Potty",         text: "Potty break every 1–2 hours",                 frequency: "daily" },
+      { id: "p1_2", category: "Potty",         text: "Potty break every 1-2 hours",                 frequency: "daily" },
       { id: "p1_3", category: "Training",      text: "Crate training session",                       frequency: "daily" },
       { id: "p1_4", category: "Training",      text: "Name recognition & 'sit' practice",            frequency: "daily" },
       { id: "p1_5", category: "Socialization", text: "Expose to new sounds/surfaces/people",         frequency: "daily" },
-      { id: "p1_6", category: "Grooming",      text: "Brush coat (2–3x/week)",                       frequency: "weekly" },
-      { id: "p1_7", category: "Play",          text: "Gentle play session (5–10 min)",               frequency: "daily" },
+      { id: "p1_6", category: "Grooming",      text: "Brush coat (2-3x/week)",                       frequency: "weekly" },
+      { id: "p1_7", category: "Play",          text: "Gentle play session (5-10 min)",               frequency: "daily" },
       { id: "p1_8", category: "Health",        text: "Handle paws, ears, mouth for desensitization", frequency: "daily" },
     ],
   },
   {
-    id: "phase2", label: "3–6 Months", color: "#7cb87c", emoji: "🌿", weeks: "3–6 months",
+    id: "phase2", label: "3-6 Months", color: "#7cb87c", emoji: "\u{1F33F}", weeks: "3-6 months",
     tasks: [
-      { id: "p2_1", category: "Feeding",  text: "Transition to 2–3 meals/day",              frequency: "daily" },
-      { id: "p2_2", category: "Exercise", text: "Low-impact walk (15–20 min) — no jumping", frequency: "daily" },
+      { id: "p2_1", category: "Feeding",  text: "Transition to 2-3 meals/day",              frequency: "daily" },
+      { id: "p2_2", category: "Exercise", text: "Low-impact walk (15-20 min) -- no jumping", frequency: "daily" },
       { id: "p2_3", category: "Training", text: "Practice 'stay', 'leave it', 'down'",      frequency: "daily" },
       { id: "p2_4", category: "Training", text: "Leash manners practice",                   frequency: "daily" },
       { id: "p2_5", category: "Health",   text: "Complete vaccination series",               frequency: "milestone" },
@@ -30,16 +30,16 @@ const PHASES = [
     ],
   },
   {
-    id: "phase3", label: "6–12 Months", color: "#6b9fc4", emoji: "🌳", weeks: "6–12 months",
+    id: "phase3", label: "6-12 Months", color: "#6b9fc4", emoji: "\u{1F333}", weeks: "6-12 months",
     tasks: [
       { id: "p3_1", category: "Feeding",    text: "2 meals/day",                               frequency: "daily" },
-      { id: "p3_2", category: "Exercise",   text: "2x daily walks (20–30 min each)",           frequency: "daily" },
+      { id: "p3_2", category: "Exercise",   text: "2x daily walks (20-30 min each)",           frequency: "daily" },
       { id: "p3_3", category: "Enrichment", text: "Puzzle feeder or sniff walk",               frequency: "daily" },
-      { id: "p3_4", category: "Training",   text: "Reinforce all commands (5–10 min session)", frequency: "daily" },
+      { id: "p3_4", category: "Training",   text: "Reinforce all commands (5-10 min session)", frequency: "daily" },
       { id: "p3_5", category: "Training",   text: "Recall practice in fenced area",            frequency: "weekly" },
-      { id: "p3_6", category: "Health",     text: "Transition to adult food (~10–12 months)",  frequency: "milestone" },
+      { id: "p3_6", category: "Health",     text: "Transition to adult food (~10-12 months)",  frequency: "milestone" },
       { id: "p3_7", category: "Health",     text: "Annual vet visit + boosters",               frequency: "milestone" },
-      { id: "p3_8", category: "Grooming",   text: "Professional grooming every 6–8 weeks",    frequency: "weekly" },
+      { id: "p3_8", category: "Grooming",   text: "Professional grooming every 6-8 weeks",    frequency: "weekly" },
     ],
   },
 ];
@@ -47,9 +47,9 @@ const PHASES = [
 const ALL_TASKS = PHASES.flatMap((p) => p.tasks);
 
 const FEEDING_MEALS = {
-  phase1: ["🍽️ Morning meal", "🍽️ Afternoon meal", "🍽️ Evening meal"],
-  phase2: ["🍽️ Morning meal", "🍽️ Midday meal", "🍽️ Evening meal"],
-  phase3: ["🍽️ Morning meal", "🍽️ Evening meal"],
+  phase1: ["\u{1F37D} Morning meal", "\u{1F37D} Afternoon meal", "\u{1F37D} Evening meal"],
+  phase2: ["\u{1F37D} Morning meal", "\u{1F37D} Midday meal", "\u{1F37D} Evening meal"],
+  phase3: ["\u{1F37D} Morning meal", "\u{1F37D} Evening meal"],
 };
 
 const CAT_COLORS = {
@@ -59,16 +59,16 @@ const CAT_COLORS = {
 };
 
 const TIPS = [
-  "🦴 Use ramps instead of stairs — protect that long spine!",
-  "⚖️ Even a little extra weight stresses the back.",
-  "🦮 Always use a harness, never a collar, on walks.",
-  "✂️ Brush behind ears & legs daily to prevent matting.",
-  "🛋️ Pet steps prevent dangerous jumps off furniture.",
-  "🧠 Keep sessions short (5–10 min) — dachshunds bore easily!",
+  "\u{1F9B4} Use ramps instead of stairs -- protect that long spine!",
+  "\u{2696} Even a little extra weight stresses the back.",
+  "\u{1F9AE} Always use a harness, never a collar, on walks.",
+  "\u{2702} Brush behind ears & legs daily to prevent matting.",
+  "\u{1F6CB} Pet steps prevent dangerous jumps off furniture.",
+  "\u{1F9E0} Keep sessions short (5-10 min) -- dachshunds bore easily!",
 ];
 
 const USER_COLORS  = ["#e8845c", "#6b9fc4", "#9c7cb8", "#7cb87c", "#c4a96b", "#e87c7c"];
-const USER_AVATARS = ["🐾", "🦴", "🐶", "🐕", "🌸", "⭐"];
+const USER_AVATARS = ["\u{1F43E}", "\u{1F9B4}", "\u{1F436}", "\u{1F415}", "\u{1F338}", "\u{2B50}"];
 const DAYS   = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
@@ -83,7 +83,7 @@ function dateKey(d)     { return d.toDateString(); }
 function isFriday(ds)   { return new Date(ds).getDay() === 5; }
 function shouldShow(t, ds) { return t.frequency === "weekly" ? isFriday(ds) : true; }
 
-// ── PURE HELPERS ─────────────────────────────────────────────────────────────
+// -- PURE HELPERS -------------------------------------------------------------
 function mealKey(tid, i, ds, uid) { return `${tid}_meal${i}_${ds}_${uid}`; }
 function whoCheckedMeal(comp, users, tid, i, ds) {
   return Object.entries(users || {})
@@ -101,7 +101,7 @@ function whoChecked(comp, users, tid, ds) {
 }
 function isChecked(comp, tid, ds, uid) { return !!comp?.[`${tid}_${ds}_${uid}`]; }
 
-// ── FEEDING ROW ───────────────────────────────────────────────────────────────
+// -- FEEDING ROW ---------------------------------------------------------------
 function FeedingTaskRow({ task, phase, dateStr, shared, userId, userColor, onToggleMeal, onSaveNote }) {
   const [open, setOpen] = useState(false);
   const [editNote, setEditNote] = useState(false);
@@ -117,24 +117,24 @@ function FeedingTaskRow({ task, phase, dateStr, shared, userId, userColor, onTog
     <div style={{ background: done ? `${phase.color}15` : "#fff", border: `1.5px solid ${done ? phase.color : "#e8ddd0"}`, borderRadius: 10, marginBottom: 5, overflow: "hidden" }}>
       <div style={{ display: "flex", alignItems: "flex-start", gap: 9, padding: "10px 11px" }}>
         <button onClick={() => setOpen((o) => !o)} style={{ width: 22, height: 22, borderRadius: 5, flexShrink: 0, marginTop: 1, border: `2px solid ${done ? phase.color : "#c4b09a"}`, background: done ? phase.color : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: done ? "#fff" : "#7a5c3a" }}>
-          {done ? "✓" : open ? "▲" : "▼"}
+          {done ? "\u{2713}" : open ? "\u{25B2}" : "\u{25BC}"}
         </button>
         <div style={{ flex: 1 }}>
           <div style={{ color: done ? "#7a5c3a" : "#3d2b1f", fontSize: 13, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }} onClick={() => setOpen((o) => !o)}>
             <span>{task.text}</span>
             <span style={{ fontSize: 10, background: done ? phase.color : "#e8ddd0", color: done ? "#fff" : "#7a5c3a", borderRadius: 8, padding: "1px 7px", fontWeight: "bold" }}>{doneCount}/{meals.length}</span>
           </div>
-          <div style={{ fontSize: 10, color: "#b09070", marginTop: 1 }}>📅 Daily — <span style={{ color: "#e8845c" }}>tap to log each meal</span></div>
-          {note && !editNote && <div style={{ marginTop: 5, fontSize: 11, color: "#7a5c3a", background: "#fdf0e0", borderRadius: 5, padding: "3px 7px", fontStyle: "italic" }}>📝 {note.text} <span style={{ color: "#b09070" }}>— {note.byName}</span></div>}
+          <div style={{ fontSize: 10, color: "#b09070", marginTop: 1 }}>\u{1F4C5} Daily -- <span style={{ color: "#e8845c" }}>tap to log each meal</span></div>
+          {note && !editNote && <div style={{ marginTop: 5, fontSize: 11, color: "#7a5c3a", background: "#fdf0e0", borderRadius: 5, padding: "3px 7px", fontStyle: "italic" }}>\u{1F4DD} {note.text} <span style={{ color: "#b09070" }}>-- {note.byName}</span></div>}
           {editNote && (
             <div style={{ marginTop: 6, display: "flex", gap: 5 }}>
-              <input value={noteText} onChange={(e) => setNoteText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (onSaveNote(task.id, noteText), setEditNote(false))} placeholder="Add a shared note…" style={{ flex: 1, padding: "4px 7px", borderRadius: 5, border: "1px solid #c4b09a", fontFamily: "Georgia, serif", fontSize: 11, background: "#fff8f0" }} />
+              <input value={noteText} onChange={(e) => setNoteText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (onSaveNote(task.id, noteText), setEditNote(false))} placeholder="Add a shared note\u{2026}" style={{ flex: 1, padding: "4px 7px", borderRadius: 5, border: "1px solid #c4b09a", fontFamily: "Georgia, serif", fontSize: 11, background: "#fff8f0" }} />
               <button onClick={() => { onSaveNote(task.id, noteText); setEditNote(false); }} style={{ background: phase.color, color: "#fff", border: "none", borderRadius: 5, padding: "4px 9px", cursor: "pointer", fontSize: 11 }}>Save</button>
-              <button onClick={() => setEditNote(false)} style={{ background: "#e8ddd0", color: "#7a5c3a", border: "none", borderRadius: 5, padding: "4px 7px", cursor: "pointer", fontSize: 11 }}>✕</button>
+              <button onClick={() => setEditNote(false)} style={{ background: "#e8ddd0", color: "#7a5c3a", border: "none", borderRadius: 5, padding: "4px 7px", cursor: "pointer", fontSize: 11 }}>\u{2715}</button>
             </div>
           )}
         </div>
-        <button onClick={() => { setEditNote(true); setNoteText(note?.text || ""); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, opacity: 0.35, padding: 2, flexShrink: 0 }}>📝</button>
+        <button onClick={() => { setEditNote(true); setNoteText(note?.text || ""); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, opacity: 0.35, padding: 2, flexShrink: 0 }}>\u{1F4DD}</button>
       </div>
       {open && (
         <div style={{ borderTop: `1px solid ${phase.color}30`, background: `${phase.color}08`, padding: "8px 11px 10px" }}>
@@ -144,7 +144,7 @@ function FeedingTaskRow({ task, phase, dateStr, shared, userId, userColor, onTog
             const anyDone = checkers.length > 0;
             return (
               <div key={i} style={{ display: "flex", alignItems: "center", gap: 9, padding: "7px 9px", marginBottom: i < meals.length - 1 ? 5 : 0, background: anyDone ? `${phase.color}20` : "rgba(255,255,255,0.7)", borderRadius: 8, border: `1px solid ${anyDone ? phase.color : "#e8ddd0"}` }}>
-                <button onClick={() => onToggleMeal(task.id, i, dateStr)} style={{ width: 20, height: 20, borderRadius: 4, flexShrink: 0, border: `2px solid ${myMeal ? userColor : "#c4b09a"}`, background: myMeal ? userColor : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "#fff" }}>{myMeal ? "✓" : ""}</button>
+                <button onClick={() => onToggleMeal(task.id, i, dateStr)} style={{ width: 20, height: 20, borderRadius: 4, flexShrink: 0, border: `2px solid ${myMeal ? userColor : "#c4b09a"}`, background: myMeal ? userColor : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "#fff" }}>{myMeal ? "\u{2713}" : ""}</button>
                 <span style={{ flex: 1, fontSize: 12, color: anyDone ? "#7a5c3a" : "#3d2b1f" }}>{label}</span>
                 {checkers.map((u) => <span key={u.uid} style={{ background: u.color, color: "#fff", borderRadius: 8, padding: "1px 6px", fontSize: 9, fontWeight: "bold" }}>{u.avatar} {u.uid === userId ? "You" : u.name}</span>)}
               </div>
@@ -156,7 +156,7 @@ function FeedingTaskRow({ task, phase, dateStr, shared, userId, userColor, onTog
   );
 }
 
-// ── REGULAR ROW ───────────────────────────────────────────────────────────────
+// -- REGULAR ROW ---------------------------------------------------------------
 function RegularTaskRow({ task, phase, dateStr, shared, userId, userColor, allUsers, onToggleTask, onSaveNote }) {
   const [editNote, setEditNote] = useState(false);
   const [noteText, setNoteText] = useState("");
@@ -170,27 +170,27 @@ function RegularTaskRow({ task, phase, dateStr, shared, userId, userColor, allUs
   return (
     <div style={{ background: anyDone ? `${phase.color}15` : "#fff", border: `1.5px solid ${anyDone ? phase.color : "#e8ddd0"}`, borderRadius: 10, padding: "10px 11px", marginBottom: 5 }}>
       <div style={{ display: "flex", alignItems: "flex-start", gap: 9 }}>
-        <button onClick={() => onToggleTask(task.id, dateStr)} style={{ width: 22, height: 22, borderRadius: 5, flexShrink: 0, marginTop: 1, border: `2px solid ${myCheck ? userColor : "#c4b09a"}`, background: myCheck ? userColor : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: "#fff" }}>{myCheck ? "✓" : ""}</button>
+        <button onClick={() => onToggleTask(task.id, dateStr)} style={{ width: 22, height: 22, borderRadius: 5, flexShrink: 0, marginTop: 1, border: `2px solid ${myCheck ? userColor : "#c4b09a"}`, background: myCheck ? userColor : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: "#fff" }}>{myCheck ? "\u{2713}" : ""}</button>
         <div style={{ flex: 1 }}>
           <div style={{ color: anyDone ? "#7a5c3a" : "#3d2b1f", fontSize: 13, textDecoration: anyDone && checkers.length === allUsers.length ? "line-through" : "none" }}>{task.text}</div>
-          <div style={{ fontSize: 10, color: "#b09070", marginTop: 1 }}>{task.frequency === "milestone" ? "⭐ Milestone" : task.frequency === "weekly" ? "🔁 Weekly" : "📅 Daily"}</div>
+          <div style={{ fontSize: 10, color: "#b09070", marginTop: 1 }}>{task.frequency === "milestone" ? "\u{2B50} Milestone" : task.frequency === "weekly" ? "\u{1F501} Weekly" : "\u{1F4C5} Daily"}</div>
           {checkers.length > 0 && <div style={{ display: "flex", gap: 4, marginTop: 5, flexWrap: "wrap" }}>{checkers.map((u) => <span key={u.uid} style={{ background: u.color, color: "#fff", borderRadius: 10, padding: "1px 7px", fontSize: 10, fontWeight: "bold" }}>{u.avatar} {u.uid === userId ? "You" : u.name}</span>)}</div>}
-          {note && !editNote && <div style={{ marginTop: 5, fontSize: 11, color: "#7a5c3a", background: "#fdf0e0", borderRadius: 5, padding: "3px 7px", fontStyle: "italic" }}>📝 {note.text} <span style={{ color: "#b09070" }}>— {note.byName}</span></div>}
+          {note && !editNote && <div style={{ marginTop: 5, fontSize: 11, color: "#7a5c3a", background: "#fdf0e0", borderRadius: 5, padding: "3px 7px", fontStyle: "italic" }}>\u{1F4DD} {note.text} <span style={{ color: "#b09070" }}>-- {note.byName}</span></div>}
           {editNote && (
             <div style={{ marginTop: 6, display: "flex", gap: 5 }}>
-              <input value={noteText} onChange={(e) => setNoteText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (onSaveNote(task.id, noteText), setEditNote(false))} placeholder="Add a shared note…" style={{ flex: 1, padding: "4px 7px", borderRadius: 5, border: "1px solid #c4b09a", fontFamily: "Georgia, serif", fontSize: 11, background: "#fff8f0" }} />
+              <input value={noteText} onChange={(e) => setNoteText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (onSaveNote(task.id, noteText), setEditNote(false))} placeholder="Add a shared note\u{2026}" style={{ flex: 1, padding: "4px 7px", borderRadius: 5, border: "1px solid #c4b09a", fontFamily: "Georgia, serif", fontSize: 11, background: "#fff8f0" }} />
               <button onClick={() => { onSaveNote(task.id, noteText); setEditNote(false); }} style={{ background: phase.color, color: "#fff", border: "none", borderRadius: 5, padding: "4px 9px", cursor: "pointer", fontSize: 11 }}>Save</button>
-              <button onClick={() => setEditNote(false)} style={{ background: "#e8ddd0", color: "#7a5c3a", border: "none", borderRadius: 5, padding: "4px 7px", cursor: "pointer", fontSize: 11 }}>✕</button>
+              <button onClick={() => setEditNote(false)} style={{ background: "#e8ddd0", color: "#7a5c3a", border: "none", borderRadius: 5, padding: "4px 7px", cursor: "pointer", fontSize: 11 }}>\u{2715}</button>
             </div>
           )}
         </div>
-        <button onClick={() => { setEditNote(true); setNoteText(note?.text || ""); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, opacity: 0.35, padding: 2, flexShrink: 0 }}>📝</button>
+        <button onClick={() => { setEditNote(true); setNoteText(note?.text || ""); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, opacity: 0.35, padding: 2, flexShrink: 0 }}>\u{1F4DD}</button>
       </div>
     </div>
   );
 }
 
-// ── TASK LIST ─────────────────────────────────────────────────────────────────
+// -- TASK LIST -----------------------------------------------------------------
 function TaskList({ dateStr, phase, shared, userId, userColor, allUsers, syncing, onToggleTask, onToggleMeal, onSaveNote }) {
   const comp  = shared?.completions || {};
   const users = shared?.users || {};
@@ -217,12 +217,12 @@ function TaskList({ dateStr, phase, shared, userId, userColor, allUsers, syncing
             <span style={{ fontSize: 11, color: uid === userId ? "#fff" : "#5c3d2a", fontWeight: uid === userId ? "bold" : "normal" }}>{uid === userId ? "You" : u.name}</span>
           </div>
         ))}
-        {syncing && <span style={{ fontSize: 10, color: "#b09070", alignSelf: "center" }}>⟳ syncing…</span>}
+        {syncing && <span style={{ fontSize: 10, color: "#b09070", alignSelf: "center" }}>\u{27F3} syncing\u{2026}</span>}
       </div>
 
       {hidden.length > 0 && (
         <div style={{ background: "#f8f4ec", border: "1.5px dashed #c4a96b", borderRadius: 10, padding: "8px 12px", marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 16 }}>📅</span>
+          <span style={{ fontSize: 16 }}>\u{1F4C5}</span>
           <div style={{ fontSize: 11, color: "#7a5c3a" }}><strong>{hidden.length} weekly task{hidden.length > 1 ? "s" : ""}</strong> appear on <strong>Fridays</strong> only.</div>
         </div>
       )}
@@ -242,7 +242,7 @@ function TaskList({ dateStr, phase, shared, userId, userColor, allUsers, syncing
       ))}
 
       <div style={{ background: "#fff8f0", border: "1.5px solid #e8845c", borderRadius: 11, padding: "10px 12px", marginTop: 4, display: "flex", gap: 9, alignItems: "flex-start" }}>
-        <span style={{ fontSize: 17 }}>⚠️</span>
+        <span style={{ fontSize: 17 }}>\u{26A0}</span>
         <div style={{ color: "#7a5c3a", fontSize: 11, lineHeight: 1.5 }}><strong style={{ color: "#3d2b1f" }}>Spine Protection:</strong> Always use ramps. No jumping. Harness on walks.</div>
       </div>
       <div style={{ height: 28 }} />
@@ -250,7 +250,7 @@ function TaskList({ dateStr, phase, shared, userId, userColor, allUsers, syncing
   );
 }
 
-// ── APP ───────────────────────────────────────────────────────────────────────
+// -- APP -----------------------------------------------------------------------
 export default function App() {
   const savedId     = ls(LS_ID);
   const savedName   = ls(LS_NAME);
@@ -315,7 +315,7 @@ export default function App() {
     saveData(next).catch(console.error).finally(() => setSyncing(false));
   }, []);
 
-  // ── SETUP ────────────────────────────────────────────────────────────────
+  // -- SETUP ----------------------------------------------------------------
   const handleSetup = async () => {
     const name = nameInput.trim();
     if (!name) return;
@@ -331,7 +331,7 @@ export default function App() {
     await saveData(next);
   };
 
-  // ── ACTIONS ───────────────────────────────────────────────────────────────
+  // -- ACTIONS ---------------------------------------------------------------
   const handleToggleTask = useCallback((taskId, ds) => {
     const base = getBase();
     const key  = `${taskId}_${ds}_${userId}`;
@@ -368,7 +368,7 @@ export default function App() {
     setShared(next); persist(next);
   };
 
-  // ── DERIVED ───────────────────────────────────────────────────────────────
+  // -- DERIVED ---------------------------------------------------------------
   const allUsers    = Object.entries(shared?.users || {});
   const dogName     = dogNameInput || "Noodle";
   const comp        = shared?.completions || {};
@@ -392,14 +392,14 @@ export default function App() {
 
   const tlProps = { shared, userId, userColor, allUsers, syncing, onToggleTask: handleToggleTask, onToggleMeal: handleToggleMeal, onSaveNote: handleSaveNote };
 
-  // ── SETUP SCREEN ──────────────────────────────────────────────────────────
+  // -- SETUP SCREEN ----------------------------------------------------------
   if (!setupDone) {
     return (
       <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg,#3d2b1f 0%,#5c3d2a 60%,#7a5c3a 100%)", fontFamily: "Georgia, serif", padding: 24 }}>
-        <div style={{ fontSize: 64, marginBottom: 16 }}>🐾</div>
+        <div style={{ fontSize: 64, marginBottom: 16 }}>\u{1F43E}</div>
         <h1 style={{ color: "#fdf6ec", fontSize: 24, margin: "0 0 6px", textAlign: "center" }}>Noodle Puppy Tracker</h1>
-        <p style={{ color: "#c4a477", margin: "0 0 32px", fontSize: 14, textAlign: "center" }}>Shared with your co-parent — real-time sync!</p>
-        {loading ? <div style={{ color: "#c4a477" }}>Loading…</div> : (
+        <p style={{ color: "#c4a477", margin: "0 0 32px", fontSize: 14, textAlign: "center" }}>Shared with your co-parent -- real-time sync!</p>
+        {loading ? <div style={{ color: "#c4a477" }}>Loading\u{2026}</div> : (
           <div style={{ background: "rgba(255,255,255,0.08)", borderRadius: 20, padding: "28px 24px", width: "100%", maxWidth: 340, border: "1px solid rgba(255,255,255,0.15)" }}>
             {Object.values(shared?.users || {}).length > 0 && (
               <div style={{ marginBottom: 20 }}>
@@ -414,15 +414,15 @@ export default function App() {
               </div>
             )}
             <div style={{ color: "#c4a477", fontSize: 11, letterSpacing: "1px", textTransform: "uppercase", marginBottom: 8 }}>Your name</div>
-            <input value={nameInput} onChange={(e) => setNameInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && handleSetup()} placeholder="e.g. Mom, Dad, Alex…" autoFocus style={{ width: "100%", padding: "10px 14px", borderRadius: 12, border: "none", fontFamily: "Georgia, serif", fontSize: 15, background: "rgba(255,255,255,0.12)", color: "#fdf6ec", outline: "none", boxSizing: "border-box", marginBottom: 16 }} />
-            <button onClick={handleSetup} disabled={!nameInput.trim()} style={{ width: "100%", padding: "12px", borderRadius: 12, border: "none", background: nameInput.trim() ? "#e8845c" : "rgba(255,255,255,0.1)", color: "#fff", cursor: nameInput.trim() ? "pointer" : "default", fontFamily: "Georgia, serif", fontSize: 15, fontWeight: "bold" }}>Join Tracker →</button>
+            <input value={nameInput} onChange={(e) => setNameInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && handleSetup()} placeholder="e.g. Mom, Dad, Alex\u{2026}" autoFocus style={{ width: "100%", padding: "10px 14px", borderRadius: 12, border: "none", fontFamily: "Georgia, serif", fontSize: 15, background: "rgba(255,255,255,0.12)", color: "#fdf6ec", outline: "none", boxSizing: "border-box", marginBottom: 16 }} />
+            <button onClick={handleSetup} disabled={!nameInput.trim()} style={{ width: "100%", padding: "12px", borderRadius: 12, border: "none", background: nameInput.trim() ? "#e8845c" : "rgba(255,255,255,0.1)", color: "#fff", cursor: nameInput.trim() ? "pointer" : "default", fontFamily: "Georgia, serif", fontSize: 15, fontWeight: "bold" }}>Join Tracker \u{2192}</button>
           </div>
         )}
       </div>
     );
   }
 
-  // ── MAIN UI ───────────────────────────────────────────────────────────────
+  // -- MAIN UI ---------------------------------------------------------------
   const today = new Date();
   const tStr  = dateKey(today);
   const curPhase   = PHASES.find((p) => p.id === activePhase);
@@ -434,15 +434,15 @@ export default function App() {
 
       {/* HEADER */}
       <div style={{ background: "linear-gradient(135deg,#3d2b1f 0%,#5c3d2a 100%)", padding: "18px 18px 13px", textAlign: "center" }}>
-        <div style={{ fontSize: 32, marginBottom: 2 }}>🐾</div>
+        <div style={{ fontSize: 32, marginBottom: 2 }}>\u{1F43E}</div>
         {editDogName ? (
           <div style={{ display: "flex", justifyContent: "center", gap: 7, marginBottom: 3, flexWrap: "wrap" }}>
             <input value={dogNameInput} onChange={(e) => setDogNameInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") saveDogName(); if (e.key === "Escape") setEditDogName(false); }} placeholder="Puppy's name" style={{ padding: "8px 14px", borderRadius: 18, border: "2px solid #e8845c", fontFamily: "Georgia, serif", fontSize: 15, background: "#fff8f0", minWidth: 160, outline: "none" }} />
             <button onClick={saveDogName} style={{ background: "#e8845c", color: "#fff", border: "none", borderRadius: 18, padding: "8px 18px", cursor: "pointer", fontFamily: "Georgia, serif", fontSize: 14, fontWeight: "bold" }}>Save</button>
-            <button onClick={() => setEditDogName(false)} style={{ background: "rgba(255,255,255,0.15)", color: "#fdf6ec", border: "none", borderRadius: 18, padding: "8px 14px", cursor: "pointer", fontFamily: "Georgia, serif", fontSize: 14 }}>✕</button>
+            <button onClick={() => setEditDogName(false)} style={{ background: "rgba(255,255,255,0.15)", color: "#fdf6ec", border: "none", borderRadius: 18, padding: "8px 14px", cursor: "pointer", fontFamily: "Georgia, serif", fontSize: 14 }}>\u{2715}</button>
           </div>
         ) : (
-          <h1 onClick={() => setEditDogName(true)} style={{ color: "#fdf6ec", fontSize: 19, fontWeight: "bold", margin: "0 0 2px", cursor: "pointer" }}>{dogName}'s Journey <span style={{ fontSize: 11, color: "#c4a477" }}>✏️</span></h1>
+          <h1 onClick={() => setEditDogName(true)} style={{ color: "#fdf6ec", fontSize: 19, fontWeight: "bold", margin: "0 0 2px", cursor: "pointer" }}>{dogName}'s Journey <span style={{ fontSize: 11, color: "#c4a477" }}>\u{270F}</span></h1>
         )}
         <div style={{ display: "flex", justifyContent: "center", gap: 6, marginBottom: 8, flexWrap: "wrap" }}>
           {allUsers.map(([uid, u]) => (
@@ -458,7 +458,7 @@ export default function App() {
 
       {/* NAV */}
       <div style={{ display: "flex", background: "#3d2b1f" }}>
-        {[["today","📋","Today"],["calendar","📅","Calendar"],["account","👤","Account"]].map(([v, icon, label]) => (
+        {[["today","\u{1F4CB}","Today"],["calendar","\u{1F4C5}","Calendar"],["account","\u{1F464}","Account"]].map(([v, icon, label]) => (
           <button key={v} onClick={() => setView(v)} style={{ flex: 1, padding: "8px", background: v === view || (v === "calendar" && view === "day") ? "#e8845c" : "transparent", color: "#fff", border: "none", cursor: "pointer", fontFamily: "Georgia, serif", fontSize: 11, fontWeight: v === view || (v === "calendar" && view === "day") ? "bold" : "normal", display: "flex", flexDirection: "column", alignItems: "center", gap: 1 }}>
             <span style={{ fontSize: 15 }}>{icon}</span><span>{label}</span>
           </button>
@@ -483,9 +483,9 @@ export default function App() {
       {view === "calendar" && (
         <div style={{ padding: "13px", maxWidth: 600, margin: "0 auto" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-            <button onClick={() => setCalMonth((m) => { const d = new Date(m.year, m.month - 1, 1); return { year: d.getFullYear(), month: d.getMonth() }; })} style={{ background: "#e8ddd0", border: "none", borderRadius: 8, padding: "5px 13px", cursor: "pointer", fontSize: 17 }}>‹</button>
+            <button onClick={() => setCalMonth((m) => { const d = new Date(m.year, m.month - 1, 1); return { year: d.getFullYear(), month: d.getMonth() }; })} style={{ background: "#e8ddd0", border: "none", borderRadius: 8, padding: "5px 13px", cursor: "pointer", fontSize: 17 }}>\u{2039}</button>
             <div style={{ fontWeight: "bold", color: "#3d2b1f", fontSize: 15 }}>{MONTHS[calMonth.month]} {calMonth.year}</div>
-            <button onClick={() => setCalMonth((m) => { const d = new Date(m.year, m.month + 1, 1); return { year: d.getFullYear(), month: d.getMonth() }; })} style={{ background: "#e8ddd0", border: "none", borderRadius: 8, padding: "5px 13px", cursor: "pointer", fontSize: 17 }}>›</button>
+            <button onClick={() => setCalMonth((m) => { const d = new Date(m.year, m.month + 1, 1); return { year: d.getFullYear(), month: d.getMonth() }; })} style={{ background: "#e8ddd0", border: "none", borderRadius: 8, padding: "5px 13px", cursor: "pointer", fontSize: 17 }}>\u{203A}</button>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 2, marginBottom: 2 }}>{DAYS.map((d) => <div key={d} style={{ textAlign: "center", fontSize: 10, color: "#9a7a5a", fontWeight: "bold" }}>{d}</div>)}</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 2 }}>
@@ -509,7 +509,7 @@ export default function App() {
             })}
           </div>
           <div style={{ display: "flex", gap: 9, marginTop: 12, justifyContent: "center", flexWrap: "wrap" }}>
-            {[["#7cb87c","80%+ done"],["#e8c45c","40–79%"],["#f0d0c0","< 40%"],["#fff","No activity"]].map(([c, l]) => (
+            {[["#7cb87c","80%+ done"],["#e8c45c","40-79%"],["#f0d0c0","< 40%"],["#fff","No activity"]].map(([c, l]) => (
               <div key={l} style={{ display: "flex", alignItems: "center", gap: 4 }}><div style={{ width: 9, height: 9, borderRadius: 3, background: c, border: "1px solid #e8ddd0" }} /><span style={{ fontSize: 10, color: "#7a5c3a" }}>{l}</span></div>
             ))}
           </div>
@@ -527,7 +527,7 @@ export default function App() {
         const totalDone = totalVis.filter((t) => { const ph = PHASES.find((p) => p.tasks.includes(t)); return t.category === "Feeding" ? isFeedingDone(comp, users, t.id, ph?.id, ds) : allUsers.some(([uid]) => isChecked(comp, t.id, ds, uid)); }).length;
         return (<>
           <div style={{ background: "#f0e8d8", padding: "8px 12px", display: "flex", alignItems: "center", gap: 9, borderBottom: "1px solid #e8ddd0" }}>
-            <button onClick={() => setView("calendar")} style={{ background: "#e8ddd0", border: "none", borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontFamily: "Georgia, serif", fontSize: 12, color: "#3d2b1f" }}>← Back</button>
+            <button onClick={() => setView("calendar")} style={{ background: "#e8ddd0", border: "none", borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontFamily: "Georgia, serif", fontSize: 12, color: "#3d2b1f" }}>\u{2190} Back</button>
             <div style={{ flex: 1 }}><div style={{ fontWeight: "bold", color: "#3d2b1f", fontSize: 13 }}>{dayLabel}</div><div style={{ fontSize: 10, color: "#9a7a5a" }}>{totalDone}/{totalVis.length} tasks done</div></div>
             {isToday && <span style={{ background: "#e8845c", color: "#fff", borderRadius: 7, padding: "2px 7px", fontSize: 10, fontWeight: "bold" }}>Today</span>}
           </div>
@@ -573,15 +573,15 @@ export default function App() {
 
           <div style={{ background: "#fff", borderRadius: 16, padding: "18px", border: "1.5px solid #e8ddd0" }}>
             <div style={{ fontSize: 11, fontWeight: "bold", letterSpacing: "1.5px", color: "#7a5c3a", textTransform: "uppercase", marginBottom: 14 }}>Puppy Name</div>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}><span style={{ fontSize: 28 }}>🐾</span><div style={{ fontWeight: "bold", color: "#3d2b1f", fontSize: 18 }}>{dogName}</div></div>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}><span style={{ fontSize: 28 }}>\u{1F43E}</span><div style={{ fontWeight: "bold", color: "#3d2b1f", fontSize: 18 }}>{dogName}</div></div>
             {editDogName ? (
               <div style={{ display: "flex", gap: 8 }}>
                 <input value={dogNameInput} onChange={(e) => setDogNameInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") saveDogName(); if (e.key === "Escape") setEditDogName(false); }} placeholder="Puppy's name" style={{ flex: 1, padding: "9px 13px", borderRadius: 10, border: "1.5px solid #e8845c", fontFamily: "Georgia, serif", fontSize: 14, background: "#fdf6ec", outline: "none" }} />
                 <button onClick={saveDogName} style={{ background: "#e8845c", color: "#fff", border: "none", borderRadius: 10, padding: "9px 16px", cursor: "pointer", fontFamily: "Georgia, serif", fontSize: 14, fontWeight: "bold" }}>Save</button>
-                <button onClick={() => setEditDogName(false)} style={{ background: "#e8ddd0", color: "#7a5c3a", border: "none", borderRadius: 10, padding: "9px 12px", cursor: "pointer", fontSize: 14 }}>✕</button>
+                <button onClick={() => setEditDogName(false)} style={{ background: "#e8ddd0", color: "#7a5c3a", border: "none", borderRadius: 10, padding: "9px 12px", cursor: "pointer", fontSize: 14 }}>\u{2715}</button>
               </div>
             ) : (
-              <button onClick={() => setEditDogName(true)} style={{ background: "#f0e8d8", border: "1.5px solid #e8ddd0", borderRadius: 10, padding: "9px 16px", cursor: "pointer", fontFamily: "Georgia, serif", fontSize: 13, color: "#7a5c3a" }}>✏️ Change puppy name</button>
+              <button onClick={() => setEditDogName(true)} style={{ background: "#f0e8d8", border: "1.5px solid #e8ddd0", borderRadius: 10, padding: "9px 16px", cursor: "pointer", fontFamily: "Georgia, serif", fontSize: 13, color: "#7a5c3a" }}>\u{270F} Change puppy name</button>
             )}
           </div>
           <div style={{ height: 32 }} />
