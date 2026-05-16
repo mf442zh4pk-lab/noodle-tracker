@@ -15,13 +15,13 @@ import { initializeApp } from "firebase/app";
 import { getDatabase, ref, onValue, set, get } from "firebase/database";
 
 const firebaseConfig = {
-  apiKey:            "REPLACE_WITH_YOUR_API_KEY",
-  authDomain:        "REPLACE_WITH_YOUR_AUTH_DOMAIN",
-  databaseURL:       "REPLACE_WITH_YOUR_DATABASE_URL",
-  projectId:         "REPLACE_WITH_YOUR_PROJECT_ID",
-  storageBucket:     "REPLACE_WITH_YOUR_STORAGE_BUCKET",
-  messagingSenderId: "REPLACE_WITH_YOUR_MESSAGING_SENDER_ID",
-  appId:             "REPLACE_WITH_YOUR_APP_ID",
+  apiKey:            "AIzaSyCSpTz1NNiWBjsbVvsEP_OFwGbi2xlOjns",
+  authDomain:        "noodle-tracker-a1840.firebaseapp.com",
+  databaseURL:       "https://noodle-tracker-a1840-default-rtdb.firebaseio.com",
+  projectId:         "noodle-tracker-a1840",
+  storageBucket:     "noodle-tracker-a1840.firebasestorage.app",
+  messagingSenderId: "1006750763456",
+  appId:             "1:1006750763456:web:5fb1f0195dd4371c152025",
 };
 
 const app = initializeApp(firebaseConfig);
