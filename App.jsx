@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { loadData, saveData, subscribeToData } from "./firebase";
+import { loadData, saveData, subscribeToData } from "./firebase.js";
+
 
 // -- DATA ----------------------------------------------------------------------
 const PHASES = [
