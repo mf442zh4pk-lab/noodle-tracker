@@ -13,7 +13,19 @@
     </style>
   </head>
   <body>
-    <div id="root"></div>
-    <script type="module" src="/main.jsx"></script>
-  </body>
+  <div id="root"></div>
+  <div id="err" style="display:none;padding:20px;color:red;font:14px monospace;white-space:pre-wrap"></div>
+  <script>
+    window.onerror = function(m,s,l,c,e) {
+      document.getElementById("err").style.display = "block";
+      document.getElementById("err").textContent = m + "\nLine: " + l + "\n" + (e&&e.stack||"");
+    };
+    window.onunhandledrejection = function(e) {
+      document.getElementById("err").style.display = "block";
+      document.getElementById("err").textContent = String(e.reason&&e.reason.stack||e.reason);
+    };
+  </script>
+  <script type="module" src="/main.jsx"></script>
+</body>
+
 </html>
