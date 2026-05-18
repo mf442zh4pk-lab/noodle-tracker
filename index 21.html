@@ -1,0 +1,2463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#3d2b1f" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Noodle" />
+  <title>Noodle Tracker</title>
+  <style>* { box-sizing: border-box; margin: 0; padding: 0; } body { font-family: Georgia, serif; background: #fdf6ec; }</style>
+</head>
+<body>
+  <div id="root"></div>
+  <div id="err" style="display:none;padding:20px;color:red;font:13px monospace;white-space:pre-wrap;word-break:break-all;position:fixed;top:0;left:0;right:0;background:white;z-index:9999"></div>
+
+  <script>
+    window.onerror = function(m,s,l,c,e) {
+      var el = document.getElementById("err");
+      el.style.display = "block";
+      el.textContent = "Error: " + m + "\nLine: " + l + "\n" + (e&&e.stack||"");
+    };
+    window.onunhandledrejection = function(e) {
+      var el = document.getElementById("err");
+      el.style.display = "block";
+      el.textContent = "Unhandled: " + String(e.reason&&e.reason.stack||e.reason);
+    };
+  </script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin="anonymous"></script>
+  <script type="text/babel" data-type="module">
+    import React, { useState, useEffect, useCallback, useRef } from "https://esm.sh/react@18.2.0";
+    import { createRoot } from "https://esm.sh/react-dom@18.2.0/client";
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js";
+    import { getDatabase, ref, onValue, set, get } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-database.js";
+
+    // Make React hooks available globally for top-level components
+    window._useState    = useState;
+    window._useEffect   = useEffect;
+    window._useCallback = useCallback;
+    window._useRef      = useRef;
+    window._React       = React;
+
+
+
+    // -- TIME HELPERS ----------------------------------------------------------
+    function to12h(val24) {
+      if (!val24) return { h: "12", m: "00", ampm: "AM" };
+      const [hh, mm] = val24.split(":");
+      let h = parseInt(hh, 10);
+      const ampm = h >= 12 ? "PM" : "AM";
+      if (h === 0) h = 12;
+      else if (h > 12) h -= 12;
+      return { h: String(h), m: mm || "00", ampm };
+    }
+    function to24h(h, m, ampm) {
+      let hh = parseInt(h, 10);
+      if (ampm === "AM" && hh === 12) hh = 0;
+      else if (ampm === "PM" && hh !== 12) hh += 12;
+      return String(hh).padStart(2,"0") + ":" + String(m).padStart(2,"0");
+    }
+    function fmt12h(val24) {
+      if (!val24) return "";
+      const { h, m, ampm } = to12h(val24);
+      return h + ":" + m + " " + ampm;
+    }
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyCSpTz1NNiWBjsbVvsEP_OFwGbi2xlOjns",
+      authDomain: "noodle-tracker-a1840.firebaseapp.com",
+      databaseURL: "https://noodle-tracker-a1840-default-rtdb.firebaseio.com",
+      projectId: "noodle-tracker-a1840",
+      storageBucket: "noodle-tracker-a1840.firebasestorage.app",
+      messagingSenderId: "1006750763456",
+      appId: "1:1006750763456:web:5fb1f0195dd4371c152025"
+    };
+
+    const fbApp = initializeApp(firebaseConfig);
+    const db = getDatabase(fbApp);
+    const DATA_PATH = "noodle_tracker_v1";
+    const GALLERY_PATH = "noodle_gallery_v1";
+    const AUDIT_PATH = "noodle_audit_v1";
+
+    function loadData() { return get(ref(db, DATA_PATH)).then(s => s.exists() ? s.val() : null); }
+
+    async function saveData(data) {
+      // Split gallery out into its own path to avoid 10MB Firebase limit
+      const { gallery, profilePhoto, ...rest } = data;
+      const saves = [set(ref(db, DATA_PATH), { ...rest, profilePhoto: profilePhoto || null })];
+      if (gallery !== undefined) {
+        saves.push(set(ref(db, GALLERY_PATH), gallery || []));
+      }
+      await Promise.all(saves);
+    }
+
+    function loadAuditLog() { return get(ref(db, AUDIT_PATH)).then(s => s.exists() ? s.val() : []); }
+    async function appendAuditEntry(entry) {
+      try {
+        const existing = await loadAuditLog();
+        const log = Array.isArray(existing) ? existing : Object.values(existing || {});
+        const trimmed = [...log, entry].slice(-500);
+        await set(ref(db, AUDIT_PATH), trimmed);
+      } catch(e) { console.error("Audit log failed", e); }
+    }
+    // Expose on window so top-level components can access them
+    window._loadAuditLog = loadAuditLog;
+    window._appendAuditEntry = appendAuditEntry;
+    window._to12h = to12h;
+    window._to24h = to24h;
+    window._fmt12h = fmt12h;
+      // Subscribe to both paths and merge
+      let mainData = null, galleryData = null;
+      let mainReady = false, galleryReady = false;
+      const merge = () => {
+        if (mainReady && galleryReady) {
+          callback(mainData ? { ...mainData, gallery: galleryData || [] } : null);
+        }
+      };
+      const unsubMain = onValue(ref(db, DATA_PATH), s => {
+        mainData = s.exists() ? s.val() : null;
+        mainReady = true;
+        merge();
+      });
+      const unsubGallery = onValue(ref(db, GALLERY_PATH), s => {
+        galleryData = s.exists() ? s.val() : [];
+        // Firebase returns arrays as objects if keys aren't sequential — convert
+        if (galleryData && !Array.isArray(galleryData)) {
+          galleryData = Object.values(galleryData);
+        }
+        galleryReady = true;
+        merge();
+      });
+      return () => { unsubMain(); unsubGallery(); };
+    }
+
+
+// -- DATA ----------------------------------------------------------------------
+const PHASE_TASKS = [
+  {
+    id: "phase1", label: "0-3 Months", emoji: "🌱", weeks: "8-12 weeks",
+    tasks: [
+      { id: "p1_1", category: "Feeding",       text: "Feed 3x/day (puppy kibble, small breed)",     frequency: "daily" },
+      { id: "p1_2", category: "Potty",         text: "Potty break every 1-2 hours",                 frequency: "daily" },
+      { id: "p1_3", category: "Training",      text: "Crate training session",                       frequency: "daily" },
+      { id: "p1_4", category: "Training",      text: "Name recognition & 'sit' practice",            frequency: "daily" },
+      { id: "p1_5", category: "Socialization", text: "Expose to new sounds/surfaces/people",         frequency: "daily" },
+      { id: "p1_6", category: "Grooming",      text: "Brush coat (2-3x/week)",                       frequency: "weekly" },
+      { id: "p1_7", category: "Play",          text: "Gentle play session (5-10 min)",               frequency: "daily" },
+      { id: "p1_8", category: "Health",        text: "Handle paws, ears, mouth for desensitization", frequency: "daily" },
+    ],
+  },
+  {
+    id: "phase2", label: "3-6 Months", emoji: "🌿", weeks: "3-6 months",
+    tasks: [
+      { id: "p2_1", category: "Feeding",  text: "Transition to 2-3 meals/day",              frequency: "daily" },
+      { id: "p2_2", category: "Exercise", text: "Low-impact walk (15-20 min) -- no jumping", frequency: "daily" },
+      { id: "p2_3", category: "Training", text: "Practice 'stay', 'leave it', 'down'",      frequency: "daily" },
+      { id: "p2_4", category: "Training", text: "Leash manners practice",                   frequency: "daily" },
+      { id: "p2_7", category: "Grooming", text: "Daily brushing (coat growing in)",          frequency: "daily" },
+      { id: "p2_8", category: "Grooming", text: "Nail trim & ear cleaning",                  frequency: "weekly" },
+    ],
+  },
+  {
+    id: "phase3", label: "6-12 Months", emoji: "🌳", weeks: "6-12 months",
+    tasks: [
+      { id: "p3_1", category: "Feeding",    text: "2 meals/day",                               frequency: "daily" },
+      { id: "p3_2", category: "Exercise",   text: "2x daily walks (20-30 min each)",           frequency: "daily" },
+      { id: "p3_3", category: "Enrichment", text: "Puzzle feeder or sniff walk",               frequency: "daily" },
+      { id: "p3_4", category: "Training",   text: "Reinforce all commands (5-10 min session)", frequency: "daily" },
+      { id: "p3_5", category: "Training",   text: "Recall practice in fenced area",            frequency: "weekly" },
+      { id: "p3_8", category: "Grooming",   text: "Professional grooming every 6-8 weeks",    frequency: "weekly" },
+    ],
+  },
+];
+
+function getPhases(thm) {
+  const colors = thm ? thm.phaseColors : ["#e8845c","#7cb87c","#6b9fc4"];
+  return PHASE_TASKS.map((p, i) => ({ ...p, color: colors[i] }));
+}
+
+
+
+
+const FEEDING_MEALS = {
+  phase1: ["🍽 Morning meal", "🍽 Afternoon meal", "🍽 Evening meal"],
+  phase2: ["🍽 Morning meal", "🍽 Midday meal", "🍽 Evening meal"],
+  phase3: ["🍽 Morning meal", "🍽 Evening meal"],
+};
+
+const CAT_COLORS = {
+  Feeding: "#e8845c", Potty: "#c4a96b", Training: "#7cb87c",
+  Socialization: "#c47cb8", Grooming: "#6b9fc4", Play: "#e8c45c",
+  Health: "#e87c7c", Exercise: "#7cb8b8", Enrichment: "#9c7cb8",
+};
+
+const TIPS = [
+  "🦴 Use ramps instead of stairs -- protect that long spine!",
+  " Even a little extra weight stresses the back.",
+  "🦮 Always use a harness, never a collar, on walks.",
+  " Brush behind ears & legs daily to prevent matting.",
+  "🛋 Pet steps prevent dangerous jumps off furniture.",
+  "🧠 Keep sessions short (5-10 min) -- dachshunds bore easily!",
+];
+
+const NOODLE_BIRTHDAY = new Date(2026, 2, 23); // March 23 2026 - local time
+
+function getNoodleAge(today) {
+  const msPerDay = 1000 * 60 * 60 * 24;
+  const days = Math.floor((today - NOODLE_BIRTHDAY) / msPerDay);
+  const weeks = Math.floor(days / 7);
+  if (days < 0) return { days: 0, weeks: 0, months: 0, label: "Not born yet!" };
+  const months = Math.floor(days / 30.44);
+  let label;
+  if (weeks < 4) label = `${weeks} week${weeks !== 1 ? "s" : ""} old`;
+  else if (months < 24) label = `${months} month${months !== 1 ? "s" : ""} old`;
+  else label = `${Math.floor(months/12)} year${Math.floor(months/12) !== 1 ? "s" : ""} old`;
+  return { days, weeks, months, label };
+}
+
+function getPhaseForAge(months) {
+  if (months < 3) return "phase1";
+  if (months < 6) return "phase2";
+  return "phase3";
+}
+
+function getPhaseProgress(birthday, today) {
+  const phases = [
+    { id: "phase1", start: 0, end: 3 },
+    { id: "phase2", start: 3, end: 6 },
+    { id: "phase3", start: 6, end: 12 },
+  ];
+  const msPerDay = 1000 * 60 * 60 * 24;
+  const days = Math.floor((today - birthday) / msPerDay);
+  const months = days / 30.44;
+  const phase = phases.find(p => months >= p.start && months < p.end) || phases[2];
+  const phaseStartDays = phase.start * 30.44;
+  const phaseDurationDays = (phase.end - phase.start) * 30.44;
+  const daysIntoPhase = Math.max(0, days - phaseStartDays);
+  const pct = Math.min(100, Math.round((daysIntoPhase / phaseDurationDays) * 100));
+  const daysLeft = Math.max(0, Math.round(phaseDurationDays - daysIntoPhase));
+  return { phase, pct, daysLeft, daysIntoPhase: Math.round(daysIntoPhase) };
+}
+
+
+const USER_AVATARS = ["🐾", "🦴", "🐶", "🐕", "🌸", "*"];
+const DAYS   = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+
+const LS_ID     = "noodle_uid";
+const LS_NAME   = "noodle_name";
+const LS_COLOR  = "noodle_color";
+const LS_AVATAR = "noodle_avatar";
+const LS_THEME  = "noodle_theme";
+
+const THEMES = {
+  dachshund: {
+    name: "Dachshund", emoji: "🐾",
+    header: "linear-gradient(135deg,#3d2b1f 0%,#5c3d2a 100%)",
+    nav: "#3d2b1f", pageBg: "linear-gradient(135deg,#fdf6ec 0%,#f0e8d8 100%)",
+    bodyBg: "#fdf6ec", cardBg: "#fff", border: "#e8ddd0",
+    textDark: "#3d2b1f", textMid: "#7a5c3a", textLight: "#b09070",
+    accent: "#e8845c", tabBg: "#f0e8d8",
+    phaseColors: ["#e8845c", "#7cb87c", "#6b9fc4"],
+  },
+  lavender: {
+    name: "Lavender", emoji: "💜",
+    header: "linear-gradient(135deg,#3d2b4f 0%,#5c3d7a 100%)",
+    nav: "#3d2b4f", pageBg: "linear-gradient(135deg,#f8f4ff 0%,#ede8f5 100%)",
+    bodyBg: "#f8f4ff", cardBg: "#fff", border: "#ddd8f0",
+    textDark: "#2d1f4f", textMid: "#6a5c8a", textLight: "#a09ab0",
+    accent: "#9c7cb8", tabBg: "#ede8f5",
+    phaseColors: ["#9c7cb8", "#b87cb8", "#7c8cb8"],
+  },
+  ocean: {
+    name: "Ocean", emoji: "🌊",
+    header: "linear-gradient(135deg,#1a3a4f 0%,#2a5c7a 100%)",
+    nav: "#1a3a4f", pageBg: "linear-gradient(135deg,#f0f8ff 0%,#e0eef8 100%)",
+    bodyBg: "#f0f8ff", cardBg: "#fff", border: "#c8dff0",
+    textDark: "#1a3a4f", textMid: "#3a6a8a", textLight: "#7aaac0",
+    accent: "#3a9fc4", tabBg: "#e0eef8",
+    phaseColors: ["#3a9fc4", "#3ab8b8", "#5c8ec4"],
+  },
+  rose: {
+    name: "Rose", emoji: "🌸",
+    header: "linear-gradient(135deg,#4f1f2f 0%,#7a3a50 100%)",
+    nav: "#4f1f2f", pageBg: "linear-gradient(135deg,#fff5f7 0%,#f5e8ec 100%)",
+    bodyBg: "#fff5f7", cardBg: "#fff", border: "#f0d8df",
+    textDark: "#4f1f2f", textMid: "#8a4a5a", textLight: "#b08090",
+    accent: "#e87c9c", tabBg: "#f5e8ec",
+    phaseColors: ["#e87c9c", "#e87c7c", "#c47cb8"],
+  },
+  forest: {
+    name: "Forest", emoji: "🌲",
+    header: "linear-gradient(135deg,#1f3f2f 0%,#3a6a4f 100%)",
+    nav: "#1f3f2f", pageBg: "linear-gradient(135deg,#f0f8f4 0%,#e0f0e8 100%)",
+    bodyBg: "#f0f8f4", cardBg: "#fff", border: "#c8e8d8",
+    textDark: "#1f3f2f", textMid: "#3a6a4f", textLight: "#7aaa8a",
+    accent: "#5cb87c", tabBg: "#e0f0e8",
+    phaseColors: ["#5cb87c", "#7cb85c", "#5ca87c"],
+  },
+  midnight: {
+    name: "Midnight", emoji: "🌙",
+    header: "linear-gradient(135deg,#0f1020 0%,#1a2040 100%)",
+    nav: "#0f1020", pageBg: "linear-gradient(135deg,#f0f0f8 0%,#e8e8f5 100%)",
+    bodyBg: "#f0f0f8", cardBg: "#fff", border: "#d8d8ee",
+    textDark: "#1a1a3a", textMid: "#4a4a7a", textLight: "#9a9ab0",
+    accent: "#6b6fc4", tabBg: "#e8e8f5",
+    phaseColors: ["#6b6fc4", "#8b6bc4", "#6b9fc4"],
+  },
+};
+
+
+function ls(key)        { try { return localStorage.getItem(key); } catch { return null; } }
+function lsSet(k, v)    { try { localStorage.setItem(k, v); } catch {} }
+function dateKey(d)     { return d.toDateString(); }
+function isFriday(ds)   { return new Date(ds).getDay() === 5; }
+function shouldShow(t, ds) { return t.frequency === "weekly" ? isFriday(ds) : true; }
+
+// -- PURE HELPERS -------------------------------------------------------------
+function mealKey(tid, mealIndex, ds, uid) { return `${tid}_meal${mealIndex}_${ds}_${uid}`; }
+function whoCheckedMeal(comp, users, tid, mealIndex, ds) {
+  return Object.entries(users || {})
+    .filter(([uid]) => {
+      const val = comp?.[mealKey(tid, mealIndex, ds, uid)];
+      return val && (val === true || typeof val === "object");
+    })
+    .map(([uid, u]) => {
+      const val = comp?.[mealKey(tid, mealIndex, ds, uid)];
+      return { uid, name: u.name || "", color: u.color || "#999", avatar: u.avatar || "🐾", time: (typeof val === "object" ? val.time : "") || "" };
+    });
+}
+function isFeedingDone(comp, users, tid, phaseId, ds) {
+  const meals = FEEDING_MEALS[phaseId] || [];
+  return meals.length > 0 && meals.every((meal, mealIdx) => whoCheckedMeal(comp, users, tid, mealIdx, ds).length > 0);
+}
+function whoChecked(comp, users, tid, ds) {
+  return Object.entries(users || {})
+    .filter(([uid]) => comp?.[`${tid}_${ds}_${uid}`])
+    .map(([uid, u]) => ({ uid, name: u.name || "", color: u.color || "#999", avatar: u.avatar || "🐾" }));
+}
+function isChecked(comp, tid, ds, uid) { return !!comp?.[`${tid}_${ds}_${uid}`]; }
+
+// -- POTTY HELPERS -------------------------------------------------------------
+const POTTY_SLOTS = 12;
+function pottyKey(tid, slotIdx, ds, uid) { return `${tid}_potty${slotIdx}_${ds}_${uid}`; }
+function getPottySlotData(comp, users, tid, slotIdx, ds) {
+  for (const [uid, u] of Object.entries(users || {})) {
+    const key = pottyKey(tid, slotIdx, ds, uid);
+    const val = comp?.[key];
+    if (val) {
+      // Handle legacy format (plain object saved before fix) or new format
+      let time = "";
+      let types = [];
+      if (typeof val === "object" && val !== null) {
+        const rawTime = val.time;
+        time = (rawTime && typeof rawTime === "string") ? rawTime : "";
+        const rawTypes = val.types;
+        if (Array.isArray(rawTypes)) types = rawTypes.map(String);
+        else if (rawTypes && typeof rawTypes === "object") types = Object.values(rawTypes).map(String);
+      } else if (typeof val === "string") {
+        time = val;
+      }
+      return {
+        uid: String(uid),
+        name: String(u.name || ""),
+        color: String(u.color || "#999"),
+        avatar: String(u.avatar || "🐾"),
+        time,
+        types,
+      };
+    }
+  }
+  return null;
+}
+function countPottyDone(comp, users, tid, ds) {
+  let count = 0;
+  for (let slotIdx = 0; slotIdx < POTTY_SLOTS; slotIdx++) {
+    if (getPottySlotData(comp, users, tid, slotIdx, ds)) count++;
+  }
+  return count;
+}
+
+// -- TIME PICKER COMPONENT -----------------------------------------------------
+function TimePicker({ value, onChange, color }) {
+  const { h, m, ampm } = window._to12h(value);
+  const hours = ["1","2","3","4","5","6","7","8","9","10","11","12"];
+  const mins  = ["00","05","10","15","20","25","30","35","40","45","50","55"];
+  const sel = {
+    padding: "6px 4px", borderRadius: 7,
+    border: "1.5px solid " + (color || "#c4b09a"),
+    fontFamily: "Georgia, serif", fontSize: 14,
+    background: "#fff8f0", cursor: "pointer",
+    WebkitAppearance: "none", textAlign: "center",
+  };
+  return (
+    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+      <select value={h} onChange={e => onChange(window._to24h(e.target.value, "00", ampm))} style={{ ...sel, width: 48 }}>
+        {hours.map(hr => <option key={hr} value={hr}>{hr}</option>)}
+      </select>
+      <span style={{ fontSize: 16, fontWeight: "bold", color: "#7a5c3a" }}>:</span>
+      <select value={m} onChange={e => onChange(window._to24h(h, e.target.value, ampm))} style={{ ...sel, width: 52 }}>
+        {mins.map(mn => <option key={mn} value={mn}>{mn}</option>)}
+      </select>
+      <select value={ampm} onChange={e => onChange(window._to24h(h, m, e.target.value))} style={{ ...sel, width: 56 }}>
+        <option value="AM">AM</option>
+        <option value="PM">PM</option>
+      </select>
+    </div>
+  );
+}
+
+// -- FEEDING TASK ROW ----------------------------------------------------------
+function FeedingTaskRow({ task, phase, dateStr, shared, userId, userColor, onSaveMeal, onSaveNote }) {
+  const [open, setOpen] = window._useState(false);
+  const [editNote, setEditNote] = window._useState(false);
+  const [noteText, setNoteText] = window._useState("");
+  const [editingMeal, setEditingMeal] = window._useState(null);
+  const [timeInput, setTimeInput] = window._useState("");
+  const comp  = shared?.completions || {};
+  const users = shared?.users || {};
+  const meals = FEEDING_MEALS[phase.id] || [];
+  const done  = isFeedingDone(comp, users, task.id, phase.id, dateStr);
+  const doneCount = meals.filter((meal, mealIdx) => whoCheckedMeal(comp, users, task.id, mealIdx, dateStr).length > 0).length;
+  const note = shared?.notes?.[task.id];
+
+  const logMeal = (mealIdx) => {
+    const checkers = whoCheckedMeal(comp, users, task.id, mealIdx, dateStr);
+    if (checkers.find(c => c.uid === userId)) {
+      onSaveMeal(task.id, mealIdx, dateStr, null);
+    } else {
+      const now = new Date();
+      const rawMins = Math.round(now.getMinutes() / 5) * 5; const snapH = rawMins >= 60 ? now.getHours() + 1 : now.getHours(); const snapM = rawMins >= 60 ? 0 : rawMins; setTimeInput(String(snapH % 24).padStart(2,"0") + ":" + String(snapM).padStart(2,"0"));
+      setEditingMeal(mealIdx);
+    }
+  };
+
+  return (
+    <div style={{ background: done ? phase.color+"15" : "#fff", border: "1.5px solid "+(done ? phase.color : "#e8ddd0"), borderRadius: 10, marginBottom: 5, overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 9, padding: "10px 11px" }}>
+        <button onClick={() => setOpen(o => !o)} style={{ width: 22, height: 22, borderRadius: 5, flexShrink: 0, marginTop: 1, border: "2px solid "+(done ? phase.color : "#c4b09a"), background: done ? phase.color : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: done ? "#fff" : "#7a5c3a" }}>
+          {done ? "v" : open ? "^" : "v"}
+        </button>
+        <div style={{ flex: 1 }}>
+          <div style={{ color: done ? "#7a5c3a" : "#3d2b1f", fontSize: 13, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }} onClick={() => setOpen(o => !o)}>
+            <span>{task.text}</span>
+            <span style={{ fontSize: 10, background: done ? phase.color : "#e8ddd0", color: done ? "#fff" : "#7a5c3a", borderRadius: 8, padding: "1px 7px", fontWeight: "bold" }}>{doneCount}/{meals.length}</span>
+          </div>
+          <div style={{ fontSize: 10, color: "#b09070", marginTop: 1 }}>Daily -- <span style={{ color: "#e8845c" }}>tap to log each meal + time</span></div>
+          {note && !editNote && <div style={{ marginTop: 5, fontSize: 11, color: "#7a5c3a", background: "#fdf0e0", borderRadius: 5, padding: "3px 7px", fontStyle: "italic" }}>{String(note.text||"")} -- {String(note.byName||"")}</div>}
+          {editNote && (
+            <div style={{ marginTop: 6, display: "flex", gap: 5 }}>
+              <input value={noteText} onChange={e => setNoteText(e.target.value)} placeholder="Add a shared note..." style={{ flex: 1, padding: "4px 7px", borderRadius: 5, border: "1px solid #c4b09a", fontFamily: "Georgia, serif", fontSize: 11, background: "#fff8f0" }} />
+              <button onClick={() => { onSaveNote(task.id, noteText); setEditNote(false); }} style={{ background: phase.color, color: "#fff", border: "none", borderRadius: 5, padding: "4px 9px", cursor: "pointer", fontSize: 11 }}>Save</button>
+              <button onClick={() => setEditNote(false)} style={{ background: "#e8ddd0", color: "#7a5c3a", border: "none", borderRadius: 5, padding: "4px 7px", cursor: "pointer", fontSize: 11 }}>x</button>
+            </div>
+          )}
+        </div>
+        <button onClick={() => { setEditNote(true); setNoteText(note?.text || ""); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, opacity: 0.35, padding: 2 }}>note</button>
+      </div>
+      {open && (
+        <div style={{ borderTop: "1px solid "+phase.color+"30", background: phase.color+"08", padding: "8px 11px 10px" }}>
+          {meals.map((label, mealIdx) => {
+            const checkers = whoCheckedMeal(comp, users, task.id, mealIdx, dateStr);
+            const myEntry = checkers.find(c => c.uid === userId);
+            const anyDone = checkers.length > 0;
+            const isEditing = editingMeal === mealIdx;
+            return (
+              <div key={mealIdx} style={{ marginBottom: mealIdx < meals.length - 1 ? 5 : 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "7px 9px", background: anyDone ? phase.color+"20" : "rgba(255,255,255,0.7)", borderRadius: 8, border: "1px solid "+(anyDone ? phase.color : "#e8ddd0") }}>
+                  <button onClick={() => logMeal(mealIdx)} style={{ width: 20, height: 20, borderRadius: 4, flexShrink: 0, border: "2px solid "+(myEntry ? userColor : "#c4b09a"), background: myEntry ? userColor : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "#fff" }}>{myEntry ? "v" : ""}</button>
+                  <span style={{ flex: 1, fontSize: 12, color: anyDone ? "#7a5c3a" : "#3d2b1f" }}>
+                    {label}
+                    {anyDone && checkers[0].time && <span style={{ marginLeft: 6, fontWeight: "bold", color: "#3d2b1f", fontSize: 11 }}> {window._fmt12h(checkers[0].time)}</span>}
+                  </span>
+                  {checkers.map(u => <span key={u.uid} style={{ background: u.color, color: "#fff", borderRadius: 8, padding: "1px 6px", fontSize: 9, fontWeight: "bold" }}>{u.avatar} {u.uid === userId ? "You" : u.name}</span>)}
+                </div>
+                {isEditing && (
+                  <div style={{ display: "flex", gap: 6, marginTop: 4, alignItems: "center" }}>
+                    <span style={{ fontSize: 11, color: "#7a5c3a" }}>Time:</span>
+                    <TimePicker value={timeInput} onChange={setTimeInput} color={phase.color} />
+                    <button onClick={() => { onSaveMeal(task.id, mealIdx, dateStr, timeInput || ""); setEditingMeal(null); }} style={{ background: phase.color, color: "#fff", border: "none", borderRadius: 7, padding: "5px 12px", cursor: "pointer", fontSize: 12, fontWeight: "bold" }}>Log</button>
+                    <button onClick={() => setEditingMeal(null)} style={{ background: "#e8ddd0", color: "#7a5c3a", border: "none", borderRadius: 7, padding: "5px 8px", cursor: "pointer", fontSize: 12 }}>x</button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// -- BREAK DETAIL CARD --------------------------------------------------------
+function BreakDetailCard({ entry, slotIdx, phase, userId, onSavePotty, onRemove, onClose }) {
+  const [editing, setEditing] = window._useState(false);
+  const [editTime, setEditTime] = window._useState(entry.time || "");
+  const [editTypes, setEditTypes] = window._useState(
+    Array.isArray(entry.types) ? entry.types : Object.values(entry.types || {}).map(String)
+  );
+  const [confirmDelete, setConfirmDelete] = window._useState(false);
+
+  const toggleEditType = (type) => setEditTypes(prev => prev.includes(type) ? prev.filter(t => t !== type) : [...prev, type]);
+
+  const lbl = (() => {
+    const arr = Array.isArray(entry.types) ? entry.types : Object.values(entry.types || {}).map(String);
+    if (arr.includes("Pee") && arr.includes("Poop")) return "Both";
+    if (arr.includes("Pee")) return "Pee";
+    if (arr.includes("Poop")) return "Poop";
+    return "";
+  })();
+  const typeIcon = lbl === "Both" ? "💧💩" : lbl === "Pee" ? "💧" : lbl === "Poop" ? "💩" : "";
+
+  const saveEdit = () => {
+    onSavePotty({ time: editTime, types: editTypes });
+    setEditing(false);
+    onClose();
+  };
+
+  return (
+    <div style={{ marginTop: 6, background: "#fff", border: "2px solid "+phase.color, borderRadius: 12, padding: "13px 14px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <span style={{ fontWeight: "bold", color: "#3d2b1f", fontSize: 13 }}>Break #{slotIdx + 1}</span>
+        <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", color: "#b09070", lineHeight: 1 }}>x</button>
+      </div>
+
+      {!editing ? (<>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10, padding: "8px 10px", background: phase.color+"12", borderRadius: 9 }}>
+          <span style={{ fontSize: 26 }}>{typeIcon || "🐾"}</span>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: "bold", color: "#3d2b1f" }}>{lbl || "No type logged"}</div>
+            {entry.time && <div style={{ fontSize: 12, color: "#7a5c3a", marginTop: 1 }}>at {window._fmt12h(entry.time)}</div>}
+          </div>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", background: "#f8f8f8", borderRadius: 9, marginBottom: 10 }}>
+          <div style={{ width: 28, height: 28, borderRadius: "50%", background: entry.color || "#999", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15 }}>{entry.avatar}</div>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: "bold", color: entry.color || "#999" }}>{entry.uid === userId ? "You" : entry.name}</div>
+            <div style={{ fontSize: 10, color: "#b09070" }}>logged this break</div>
+          </div>
+        </div>
+
+        <button onClick={() => setEditing(true)} style={{ width: "100%", background: phase.color+"15", border: "1.5px solid "+phase.color+"50", borderRadius: 9, padding: "8px", cursor: "pointer", color: "#3d2b1f", fontSize: 12, fontFamily: "Georgia, serif", fontWeight: "bold", marginBottom: 8 }}>
+          Edit entry
+        </button>
+
+        {!confirmDelete ? (
+          <button onClick={() => setConfirmDelete(true)} style={{ width: "100%", background: "#fff", border: "1.5px solid #e8ddd0", borderRadius: 9, padding: "8px", cursor: "pointer", color: "#b09070", fontSize: 12, fontFamily: "Georgia, serif" }}>
+            Remove entry
+          </button>
+        ) : (
+          <div style={{ background: "#fff0f0", border: "1.5px solid #e87c7c", borderRadius: 9, padding: "10px" }}>
+            <div style={{ fontSize: 12, color: "#3d2b1f", textAlign: "center", marginBottom: 8, fontWeight: "bold" }}>Remove this break?</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => { onRemove(); onClose(); }} style={{ flex: 1, background: "#e87c7c", color: "#fff", border: "none", borderRadius: 8, padding: "8px", cursor: "pointer", fontSize: 12, fontFamily: "Georgia, serif", fontWeight: "bold" }}>Yes, remove</button>
+              <button onClick={() => setConfirmDelete(false)} style={{ flex: 1, background: "#e8ddd0", color: "#3d2b1f", border: "none", borderRadius: 8, padding: "8px", cursor: "pointer", fontSize: 12, fontFamily: "Georgia, serif" }}>Cancel</button>
+            </div>
+          </div>
+        )}
+      </>) : (<>
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 11, color: "#7a5c3a", fontWeight: "bold", marginBottom: 6 }}>Time:</div>
+          <TimePicker value={editTime} onChange={setEditTime} color={phase.color} />
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 11, color: "#7a5c3a", fontWeight: "bold", marginBottom: 6 }}>Type:</div>
+          <div style={{ display: "flex", gap: 6 }}>
+            {["Pee", "Poop", "Both"].map(type => {
+              const isBoth = type === "Both";
+              const selected = isBoth ? editTypes.length === 2 : editTypes.includes(type);
+              return (
+                <button key={type} onClick={() => { if (isBoth) setEditTypes(["Pee","Poop"]); else toggleEditType(type); }} style={{
+                  flex: 1, padding: "8px 4px", borderRadius: 8, cursor: "pointer",
+                  fontFamily: "Georgia, serif", fontSize: 12,
+                  border: "2px solid "+(selected ? phase.color : "#e8ddd0"),
+                  background: selected ? phase.color+"25" : "#fff",
+                  color: selected ? "#3d2b1f" : "#9a7a5a",
+                  fontWeight: selected ? "bold" : "normal",
+                }}>
+                  {type === "Pee" ? "💧 Pee" : type === "Poop" ? "💩 Poop" : "Both"}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={saveEdit} style={{ flex: 1, background: phase.color, color: "#fff", border: "none", borderRadius: 9, padding: "9px", cursor: "pointer", fontSize: 13, fontFamily: "Georgia, serif", fontWeight: "bold" }}>Save changes</button>
+          <button onClick={() => setEditing(false)} style={{ background: "#e8ddd0", color: "#3d2b1f", border: "none", borderRadius: 9, padding: "9px 14px", cursor: "pointer", fontSize: 13, fontFamily: "Georgia, serif" }}>Cancel</button>
+        </div>
+      </>)}
+    </div>
+  );
+}
+
+// -- POTTY TASK ROW ------------------------------------------------------------
+function PottyTaskRow({ task, phase, dateStr, shared, userId, userColor, onSavePotty, onSaveNote }) {
+  const [open, setOpen] = window._useState(false);
+  const [editNote, setEditNote] = window._useState(false);
+  const [noteText, setNoteText] = window._useState("");
+  const [editingSlot, setEditingSlot] = window._useState(null);
+  const [timeInput, setTimeInput] = window._useState("");
+  const [typesInput, setTypesInput] = window._useState([]);
+  const comp  = shared?.completions || {};
+  const users = shared?.users || {};
+  const doneCount = countPottyDone(comp, users, task.id, dateStr);
+  const note = shared?.notes?.[task.id];
+
+  const [viewingSlot, setViewingSlot] = window._useState(null);
+  const [confirmDelete, setConfirmDelete] = window._useState(false);
+  const [confirmSlot, setConfirmSlot] = window._useState(null);
+
+  const startLog = (slotIdx) => {
+    if (getPottySlotData(comp, users, task.id, slotIdx, dateStr)) {
+      onSavePotty(task.id, slotIdx, dateStr, null);
+    } else {
+      const now = new Date();
+      const rawMins = Math.round(now.getMinutes() / 5) * 5; const snapH = rawMins >= 60 ? now.getHours() + 1 : now.getHours(); const snapM = rawMins >= 60 ? 0 : rawMins; setTimeInput(String(snapH % 24).padStart(2,"0") + ":" + String(snapM).padStart(2,"0"));
+      setTypesInput([]);
+      setEditingSlot(slotIdx);
+    }
+  };
+
+  const toggleType = (type) => setTypesInput(prev => prev.includes(type) ? prev.filter(t => t !== type) : [...prev, type]);
+
+  const typeLabel = (types) => {
+    if (!types) return "";
+    const arr = Array.isArray(types) ? types : Object.values(types).map(String);
+    if (arr.length === 0) return "";
+    const hasPee = arr.includes("Pee");
+    const hasPoop = arr.includes("Poop");
+    if (hasPee && hasPoop) return "Both";
+    if (hasPee) return "Pee";
+    if (hasPoop) return "Poop";
+    return "";
+  };
+
+  return (
+    <div style={{ background: doneCount > 0 ? phase.color+"15" : "#fff", border: "1.5px solid "+(doneCount > 0 ? phase.color : "#e8ddd0"), borderRadius: 10, marginBottom: 5, overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 9, padding: "10px 11px" }}>
+        <button onClick={() => setOpen(o => !o)} style={{ width: 22, height: 22, borderRadius: 5, flexShrink: 0, marginTop: 1, border: "2px solid "+(doneCount > 0 ? phase.color : "#c4b09a"), background: doneCount > 0 ? phase.color : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: doneCount > 0 ? "#fff" : "#7a5c3a" }}>
+          {open ? "^" : "v"}
+        </button>
+        <div style={{ flex: 1 }}>
+          <div style={{ color: doneCount > 0 ? "#7a5c3a" : "#3d2b1f", fontSize: 13, display: "flex", alignItems: "center", gap: 6, cursor: "pointer", flexWrap: "wrap" }} onClick={() => setOpen(o => !o)}>
+            <span>{task.text}</span>
+            <span style={{ fontSize: 10, background: doneCount > 0 ? phase.color : "#e8ddd0", color: doneCount > 0 ? "#fff" : "#7a5c3a", borderRadius: 8, padding: "1px 7px", fontWeight: "bold" }}>{doneCount}/{POTTY_SLOTS}</span>
+          </div>
+          <div style={{ fontSize: 10, color: "#b09070", marginTop: 1 }}>Daily -- <span style={{ color: "#c4a96b" }}>tap to log time + pee/poop</span></div>
+
+          {/* Summary pills for logged breaks - collapsed view */}
+          {doneCount > 0 && !open && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 6 }}>
+              {Array.from({ length: POTTY_SLOTS }, (_, slotIdx) => {
+                const entry = getPottySlotData(comp, users, task.id, slotIdx, dateStr);
+                if (!entry) return null;
+                const lbl = typeLabel(entry.types);
+                const typeIcon = lbl === "Both" ? "💧💩" : lbl === "Pee" ? "💧" : lbl === "Poop" ? "💩" : "✓";
+                return (
+                  <button key={slotIdx} onClick={() => { setViewingSlot(slotIdx); setConfirmDelete(false); }} style={{
+                    display: "flex", alignItems: "center", gap: 3,
+                    background: phase.color+"25", border: "1.5px solid "+phase.color+"60",
+                    borderRadius: 10, padding: "3px 8px",
+                    cursor: "pointer", fontFamily: "Georgia, serif",
+                  }}>
+                    <span style={{ fontSize: 13 }}>{typeIcon}</span>
+                    {entry.time && <span style={{ fontWeight: "bold", color: "#3d2b1f", fontSize: 11 }}>{window._fmt12h(entry.time)}</span>}
+                  </button>
+                );
+              })}
+              <button onClick={() => setOpen(true)} style={{
+                background: "transparent", border: "1.5px dashed "+phase.color+"60",
+                borderRadius: 10, padding: "3px 8px", fontSize: 10,
+                cursor: "pointer", color: phase.color, fontFamily: "Georgia, serif",
+              }}>+ log</button>
+            </div>
+          )}
+
+          {/* Detail card for a tapped break */}
+          {viewingSlot !== null && (() => {
+            const entry = getPottySlotData(comp, users, task.id, viewingSlot, dateStr);
+            if (!entry) { setViewingSlot(null); return null; }
+            return (
+              <BreakDetailCard
+                key={viewingSlot}
+                entry={entry}
+                slotIdx={viewingSlot}
+                phase={phase}
+                userId={userId}
+                onSavePotty={(data) => onSavePotty(task.id, viewingSlot, dateStr, data)}
+                onRemove={() => { onSavePotty(task.id, viewingSlot, dateStr, null); }}
+                onClose={() => setViewingSlot(null)}
+              />
+            );
+          })()}
+
+          {note && !editNote && <div style={{ marginTop: 5, fontSize: 11, color: "#7a5c3a", background: "#fdf0e0", borderRadius: 5, padding: "3px 7px", fontStyle: "italic" }}>{String(note.text||"")} -- {String(note.byName||"")}</div>}
+          {editNote && (
+            <div style={{ marginTop: 6, display: "flex", gap: 5 }}>
+              <input value={noteText} onChange={e => setNoteText(e.target.value)} placeholder="Add a note..." style={{ flex: 1, padding: "4px 7px", borderRadius: 5, border: "1px solid #c4b09a", fontFamily: "Georgia, serif", fontSize: 11, background: "#fff8f0" }} />
+              <button onClick={() => { onSaveNote(task.id, noteText); setEditNote(false); }} style={{ background: phase.color, color: "#fff", border: "none", borderRadius: 5, padding: "4px 9px", cursor: "pointer", fontSize: 11 }}>Save</button>
+              <button onClick={() => setEditNote(false)} style={{ background: "#e8ddd0", color: "#7a5c3a", border: "none", borderRadius: 5, padding: "4px 7px", cursor: "pointer", fontSize: 11 }}>x</button>
+            </div>
+          )}
+        </div>
+        <button onClick={() => { setEditNote(true); setNoteText(note?.text || ""); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 11, opacity: 0.4, padding: 2 }}>note</button>
+      </div>
+      {open && (
+        <div style={{ borderTop: "1px solid "+phase.color+"30", background: phase.color+"08", padding: "8px 11px 10px" }}>
+          {Array.from({ length: POTTY_SLOTS }, (_, slotIdx) => {
+            const entry = getPottySlotData(comp, users, task.id, slotIdx, dateStr);
+            const isEditing = editingSlot === slotIdx;
+            const lbl = entry ? typeLabel(entry.types) : "";
+            const typeIcon = lbl === "Both" ? "💧💩" : lbl === "Pee" ? "💧" : lbl === "Poop" ? "💩" : "";
+            const isConfirming = confirmSlot === slotIdx;
+            return (
+              <div key={slotIdx} style={{ marginBottom: slotIdx < POTTY_SLOTS - 1 ? 5 : 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 9px", background: entry ? phase.color+"20" : "rgba(255,255,255,0.7)", borderRadius: 8, border: "1px solid "+(isConfirming ? "#e87c7c" : entry ? phase.color : "#e8ddd0") }}>
+                  <button onClick={() => {
+                    if (entry) { setConfirmSlot(slotIdx); }
+                    else { startLog(slotIdx); }
+                  }} style={{ width: 20, height: 20, borderRadius: 4, flexShrink: 0, border: "2px solid "+(entry ? (entry.color || userColor) : "#c4b09a"), background: entry ? (entry.color || userColor) : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "#fff" }}>{entry ? "v" : ""}</button>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12, color: entry ? "#3d2b1f" : "#9a7a5a", display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                      <span style={{ fontWeight: entry ? "bold" : "normal" }}>Break #{slotIdx + 1}</span>
+                      {entry && entry.time && typeof entry.time === "string" && (
+                        <span style={{ fontSize: 12, color: "#3d2b1f" }}>{window._fmt12h(entry.time)}</span>
+                      )}
+                      {entry && typeIcon && (
+                        <span style={{ fontSize: 13 }}>{typeIcon}</span>
+                      )}
+                      {entry && lbl && (
+                        <span style={{ fontSize: 10, background: phase.color, color: "#fff", borderRadius: 6, padding: "1px 6px", fontWeight: "bold" }}>{lbl}</span>
+                      )}
+                    </div>
+                    {entry && !isConfirming && (
+                      <div style={{ fontSize: 10, color: entry.color || "#999", marginTop: 2, display: "flex", alignItems: "center", gap: 3 }}>
+                        <span>{entry.avatar}</span>
+                        <span style={{ fontWeight: "bold" }}>{entry.uid === userId ? "You" : entry.name}</span>
+                        {entry.time && <span style={{ color: "#b09070" }}>at {window._fmt12h(entry.time)}</span>}
+                      </div>
+                    )}
+                    {isConfirming && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+                        <span style={{ fontSize: 11, color: "#e87c7c", fontWeight: "bold" }}>Remove this break?</span>
+                        <button onClick={() => { startLog(slotIdx); setConfirmSlot(null); }} style={{ background: "#e87c7c", color: "#fff", border: "none", borderRadius: 6, padding: "3px 9px", cursor: "pointer", fontSize: 11, fontFamily: "Georgia, serif", fontWeight: "bold" }}>Yes</button>
+                        <button onClick={() => setConfirmSlot(null)} style={{ background: "#e8ddd0", color: "#7a5c3a", border: "none", borderRadius: 6, padding: "3px 9px", cursor: "pointer", fontSize: 11, fontFamily: "Georgia, serif" }}>No</button>
+                      </div>
+                    )}
+                  </div>
+                  {entry && !isConfirming && <button onClick={() => setConfirmSlot(slotIdx)} style={{ background: "none", border: "none", fontSize: 11, color: "#b09070", cursor: "pointer", padding: "0 2px", flexShrink: 0 }}>✕</button>}
+                </div>
+                {isEditing && (
+                  <div style={{ background: "#fff", borderRadius: 8, padding: "10px", marginTop: 4, border: "1.5px solid "+phase.color+"40" }}>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 10 }}>
+                      <span style={{ fontSize: 11, color: "#7a5c3a", fontWeight: "bold" }}>Time:</span>
+                      <TimePicker value={timeInput} onChange={setTimeInput} color={phase.color} />
+                    </div>
+                    <div style={{ marginBottom: 10 }}>
+                      <span style={{ fontSize: 11, color: "#7a5c3a", fontWeight: "bold", display: "block", marginBottom: 6 }}>Type:</span>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        {["Pee", "Poop", "Both"].map(type => {
+                          const isBoth = type === "Both";
+                          const selected = isBoth ? typesInput.length === 2 : typesInput.includes(type);
+                          return (
+                            <button key={type} onClick={() => {
+                              if (isBoth) { setTypesInput(["Pee","Poop"]); }
+                              else { toggleType(type); }
+                            }} style={{
+                              flex: 1, padding: "8px 4px", borderRadius: 8, cursor: "pointer", fontFamily: "Georgia, serif", fontSize: 12,
+                              border: "2px solid "+(selected ? phase.color : "#e8ddd0"),
+                              background: selected ? phase.color+"25" : "#fff",
+                              color: selected ? "#3d2b1f" : "#9a7a5a",
+                              fontWeight: selected ? "bold" : "normal"
+                            }}>
+                              {type === "Pee" ? "💧 Pee" : type === "Poop" ? "💩 Poop" : "Both"}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button onClick={() => { onSavePotty(task.id, slotIdx, dateStr, { time: timeInput || "", types: typesInput }); setEditingSlot(null); setTypesInput([]); }} style={{ flex: 1, background: phase.color, color: "#fff", border: "none", borderRadius: 7, padding: "8px", cursor: "pointer", fontSize: 13, fontWeight: "bold" }}>Log Break</button>
+                      <button onClick={() => { setEditingSlot(null); setTypesInput([]); }} style={{ background: "#e8ddd0", color: "#7a5c3a", border: "none", borderRadius: 7, padding: "8px 12px", cursor: "pointer", fontSize: 13 }}>Cancel</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// -- REGULAR ROW ---------------------------------------------------------------
+function RegularTaskRow({ task, phase, dateStr, shared, userId, userColor, allUsers, onToggleTask, onSaveNote }) {
+  const [editNote, setEditNote] = window._useState(false);
+  const [noteText, setNoteText] = window._useState("");
+  const comp     = shared?.completions || {};
+  const users    = shared?.users || {};
+  const myCheck  = isChecked(comp, task.id, dateStr, userId);
+  const checkers = whoChecked(comp, users, task.id, dateStr);
+  const anyDone  = checkers.length > 0;
+  const note     = shared?.notes?.[task.id];
+
+  return (
+    <div style={{ background: anyDone ? `${phase.color}15` : "#fff", border: `1.5px solid ${anyDone ? phase.color : "#e8ddd0"}`, borderRadius: 10, padding: "10px 11px", marginBottom: 5 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 9 }}>
+        <button onClick={() => onToggleTask(task.id, dateStr)} style={{ width: 22, height: 22, borderRadius: 5, flexShrink: 0, marginTop: 1, border: `2px solid ${myCheck ? userColor : "#c4b09a"}`, background: myCheck ? userColor : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: "#fff" }}>{myCheck ? "v" : ""}</button>
+        <div style={{ flex: 1 }}>
+          <div style={{ color: anyDone ? "#7a5c3a" : "#3d2b1f", fontSize: 13, textDecoration: anyDone && checkers.length === allUsers.length ? "line-through" : "none" }}>{task.text}</div>
+          <div style={{ fontSize: 10, color: "#b09070", marginTop: 1 }}>{task.frequency === "milestone" ? "* Milestone" : task.frequency === "weekly" ? "🔁 Weekly" : "📅 Daily"}</div>
+          {checkers.length > 0 && <div style={{ display: "flex", gap: 4, marginTop: 5, flexWrap: "wrap" }}>{checkers.map((u) => <span key={u.uid} style={{ background: u.color, color: "#fff", borderRadius: 10, padding: "1px 7px", fontSize: 10, fontWeight: "bold" }}>{u.avatar} {u.uid === userId ? "You" : u.name}</span>)}</div>}
+          {note && !editNote && <div style={{ marginTop: 5, fontSize: 11, color: "#7a5c3a", background: "#fdf0e0", borderRadius: 5, padding: "3px 7px", fontStyle: "italic" }}>📝 {note.text} <span style={{ color: "#b09070" }}>-- {note.byName}</span></div>}
+          {editNote && (
+            <div style={{ marginTop: 6, display: "flex", gap: 5 }}>
+              <input value={noteText} onChange={(e) => setNoteText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (onSaveNote(task.id, noteText), setEditNote(false))} placeholder="Add a shared note..." style={{ flex: 1, padding: "4px 7px", borderRadius: 5, border: "1px solid #c4b09a", fontFamily: "Georgia, serif", fontSize: 11, background: "#fff8f0" }} />
+              <button onClick={() => { onSaveNote(task.id, noteText); setEditNote(false); }} style={{ background: phase.color, color: "#fff", border: "none", borderRadius: 5, padding: "4px 9px", cursor: "pointer", fontSize: 11 }}>Save</button>
+              <button onClick={() => setEditNote(false)} style={{ background: "#e8ddd0", color: "#7a5c3a", border: "none", borderRadius: 5, padding: "4px 7px", cursor: "pointer", fontSize: 11 }}>x</button>
+            </div>
+          )}
+        </div>
+        <button onClick={() => { setEditNote(true); setNoteText(note?.text || ""); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, opacity: 0.35, padding: 2, flexShrink: 0 }}>📝</button>
+      </div>
+    </div>
+  );
+}
+
+// -- TASK LIST -----------------------------------------------------------------
+function TaskList({ dateStr, phase, shared, userId, userColor, userName, allUsers, syncing, PHASES, onToggleTask, onSaveMeal, onSaveNote, onSavePotty }) {
+  const comp  = shared?.completions || {};
+  const users = shared?.users || {};
+  const visible = phase.tasks.filter((t) => shouldShow(t, dateStr));
+  const hidden  = phase.tasks.filter((t) => t.frequency === "weekly" && !isFriday(dateStr));
+  const done    = visible.filter((t) => {
+    if (t.category === "Feeding") return isFeedingDone(comp, users, t.id, phase.id, dateStr);
+    if (t.category === "Potty") return countPottyDone(comp, users, t.id, dateStr) > 0;
+    return allUsers.some(([uid]) => isChecked(comp, t.id, dateStr, uid));
+  }).length;
+  const rp = { shared, userId, userColor, userName, allUsers, PHASES, onToggleTask, onSaveMeal, onSaveNote, onSavePotty };
+
+  return (
+    <div style={{ padding: "14px 13px 0", maxWidth: 600, margin: "0 auto" }}>
+      <div style={{ background: phase.color, borderRadius: 14, padding: "11px 15px", marginBottom: 13, display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{ fontSize: 26 }}>{phase.emoji}</span>
+        <div><div style={{ color: "#fff", fontWeight: "bold", fontSize: 15 }}>{phase.label}</div><div style={{ color: "rgba(255,255,255,0.85)", fontSize: 11 }}>{phase.weeks}</div></div>
+        <div style={{ marginLeft: "auto", textAlign: "center", background: "rgba(255,255,255,0.22)", borderRadius: 10, padding: "4px 11px" }}>
+          <div style={{ color: "#fff", fontWeight: "bold", fontSize: 18 }}>{done}/{visible.length}</div>
+          <div style={{ color: "rgba(255,255,255,0.9)", fontSize: 9 }}>done</div>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+        {allUsers.map(([uid, u]) => (
+          <div key={uid} style={{ display: "flex", alignItems: "center", gap: 5, background: uid === userId ? u.color : "rgba(0,0,0,0.06)", borderRadius: 20, padding: "3px 10px 3px 6px", border: `1.5px solid ${u.color}` }}>
+            <span style={{ fontSize: 14 }}>{u.avatar}</span>
+            <span style={{ fontSize: 11, color: uid === userId ? "#fff" : "#5c3d2a", fontWeight: uid === userId ? "bold" : "normal" }}>{uid === userId ? "You" : u.name}</span>
+          </div>
+        ))}
+        {syncing && <span style={{ fontSize: 10, color: "#b09070", alignSelf: "center" }}>~ syncing...</span>}
+      </div>
+
+      {hidden.length > 0 && (
+        <div style={{ background: "#f8f4ec", border: "1.5px dashed #c4a96b", borderRadius: 10, padding: "8px 12px", marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 16 }}>📅</span>
+          <div style={{ fontSize: 11, color: "#7a5c3a" }}><strong>{hidden.length} weekly task{hidden.length > 1 ? "s" : ""}</strong> appear on <strong>Fridays</strong> only.</div>
+        </div>
+      )}
+
+      {Array.from(new Set(visible.map((t) => t.category))).map((cat) => (
+        <div key={cat} style={{ marginBottom: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
+            <div style={{ width: 7, height: 7, borderRadius: "50%", background: CAT_COLORS[cat] || "#999" }} />
+            <span style={{ fontSize: 10, fontWeight: "bold", letterSpacing: "1.5px", color: "#7a5c3a", textTransform: "uppercase" }}>{cat}</span>
+          </div>
+          {visible.filter((t) => t.category === cat).map((task) =>
+            task.category === "Feeding"
+              ? <FeedingTaskRow key={task.id} task={task} phase={phase} dateStr={dateStr} {...rp} />
+              : task.category === "Potty"
+              ? <PottyTaskRow key={task.id} task={task} phase={phase} dateStr={dateStr} {...rp} />
+              : <RegularTaskRow key={task.id} task={task} phase={phase} dateStr={dateStr} {...rp} />
+          )}
+        </div>
+      ))}
+
+      <div style={{ background: "#fff8f0", border: "1.5px solid #e8845c", borderRadius: 11, padding: "10px 12px", marginTop: 4, display: "flex", gap: 9, alignItems: "flex-start" }}>
+        <span style={{ fontSize: 17 }}>!</span>
+        <div style={{ color: "#7a5c3a", fontSize: 11, lineHeight: 1.5 }}><strong style={{ color: "#3d2b1f" }}>Spine Protection:</strong> Always use ramps. No jumping. Harness on walks.</div>
+      </div>
+      <div style={{ height: 28 }} />
+    </div>
+  );
+}
+
+// -- MILESTONES SECTION -------------------------------------------------------
+function MilestonesSection({ shared, userId, userName, theme }) {
+  const [newMilestone, setNewMilestone] = window._useState("");
+  const [newMilestoneDate, setNewMilestoneDate] = window._useState(new Date().toISOString().slice(0,10));
+  const [newMilestoneNotes, setNewMilestoneNotes] = window._useState("");
+  const [showOutline, setShowOutline] = window._useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = window._useState(null);
+  const [editingMilestone, setEditingMilestone] = window._useState(null); // { id, text, date, notes, category }
+  const milestones = Array.isArray(shared?.milestones) ? shared.milestones : [];
+
+  // Auto milestones — phase transitions + key health dates based on birthday
+  const birthday = new Date(2026, 2, 23); // March 23 2026 - local time
+  const addDays = (d, days) => { const [y,m,dy] = (typeof d === "string" ? d : d.toISOString().slice(0,10)).split("-").map(Number); const r = new Date(y, m-1, dy); r.setDate(r.getDate() + days); return r.toISOString().slice(0,10); };
+  const addWeeks = (d, w) => addDays(d, w * 7);
+  const addMonths = (d, mo) => { const [y,m,dy] = (typeof d === "string" ? d : d.toISOString().slice(0,10)).split("-").map(Number); const r = new Date(y, m-1, dy); r.setMonth(r.getMonth() + mo); return `${r.getFullYear()}-${String(r.getMonth()+1).padStart(2,"0")}-${String(r.getDate()).padStart(2,"0")}`; };
+
+  const autoMilestones = [
+    { date: "2026-03-23", text: "Noodle is born! 🐾", category: "life", auto: true },
+    { date: addWeeks("2026-03-23", 8), text: "Comes home (8 weeks old) 🏠", category: "life", auto: true },
+    { date: addWeeks("2026-03-23", 8), text: "First vet visit & initial vaccines due", category: "health", auto: true },
+    { date: addWeeks("2026-03-23", 11), text: "2nd round of puppy vaccines (11 weeks)", category: "health", auto: true },
+    { date: addWeeks("2026-03-23", 14), text: "3rd round of puppy vaccines (14-16 weeks)", category: "health", auto: true },
+    { date: addWeeks("2026-03-23", 16), text: "Rabies vaccine due (16 weeks)", category: "health", auto: true },
+    { date: addMonths("2026-03-23", 3), text: "Phase 2 begins: 3-6 Months 🌿", category: "phase", auto: true },
+    { date: addMonths("2026-03-23", 4), text: "Ideal spay/neuter window (4-6 months)", category: "health", auto: true },
+    { date: addMonths("2026-03-23", 5), text: "Adult teeth should be coming in (4-6 months)", category: "development", auto: true },
+    { date: addMonths("2026-03-23", 6), text: "Phase 3 begins: 6-12 Months 🌳", category: "phase", auto: true },
+    { date: addMonths("2026-03-23", 6), text: "Switch to adult food (6-10 months)", category: "health", auto: true },
+    { date: addMonths("2026-03-23", 9), text: "Annual vet visit & booster vaccines", category: "health", auto: true },
+    { date: addMonths("2026-03-23", 12), text: "First birthday! 🎂 Noodle is 1 year old", category: "life", auto: true },
+  ].filter(m => { const [y,mo,d] = m.date.slice(0,10).split("-").map(Number); return new Date(y,mo-1,d) <= new Date(); });
+
+  const categoryColors = { life: "#e8845c", health: "#e87c7c", phase: "#9c7cb8", development: "#7cb87c" };
+  const categoryLabels = { life: "Life", health: "Health", phase: "Phase", development: "Development" };
+
+  const upcomingMilestones = [
+    { date: addWeeks("2026-03-23", 8), text: "Comes home (8 weeks old) 🏠", category: "life" },
+    { date: addWeeks("2026-03-23", 8), text: "First vet visit & initial vaccines due", category: "health" },
+    { date: addWeeks("2026-03-23", 11), text: "2nd round of puppy vaccines (11 weeks)", category: "health" },
+    { date: addWeeks("2026-03-23", 14), text: "3rd round of puppy vaccines (14-16 weeks)", category: "health" },
+    { date: addWeeks("2026-03-23", 16), text: "Rabies vaccine due (16 weeks)", category: "health" },
+    { date: addMonths("2026-03-23", 3), text: "Phase 2 begins: 3-6 Months 🌿", category: "phase" },
+    { date: addMonths("2026-03-23", 4), text: "Ideal spay/neuter window (4-6 months)", category: "health" },
+    { date: addMonths("2026-03-23", 5), text: "Adult teeth should be coming in", category: "development" },
+    { date: addMonths("2026-03-23", 6), text: "Phase 3 begins: 6-12 Months 🌳", category: "phase" },
+    { date: addMonths("2026-03-23", 6), text: "Switch to adult food", category: "health" },
+    { date: addMonths("2026-03-23", 9), text: "Annual vet visit & booster vaccines", category: "health" },
+    { date: addMonths("2026-03-23", 12), text: "First birthday! 🎂", category: "life" },
+  ].filter(m => { const [y,mo,d] = m.date.slice(0,10).split("-").map(Number); return new Date(y,mo-1,d) > new Date(); }).sort((a,b) => new Date(a.date) - new Date(b.date));
+
+  const allPast = [...autoMilestones, ...milestones].sort((a, b) => new Date(a.date) - new Date(b.date));
+
+  const formatDate = (ds) => {
+    const [y, m, d] = ds.slice(0,10).split("-").map(Number);
+    return new Date(y, m-1, d).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+  };
+  const daysUntil = (ds) => { const [y,mo,d] = ds.slice(0,10).split("-").map(Number); return Math.ceil((new Date(y,mo-1,d) - new Date()) / (1000*60*60*24)); };
+
+  return (<>
+    {/* Add custom milestone */}
+    <div style={{ background: theme.cardBg, borderRadius: 14, padding: "14px", marginBottom: 14, border: `1.5px solid ${theme.border}` }}>
+      <div style={{ fontSize: 12, fontWeight: "bold", color: theme.textDark, marginBottom: 10 }}>Add a milestone</div>
+      <input value={newMilestone} onChange={e => setNewMilestone(e.target.value)} placeholder="e.g. First full night sleeping through!" style={{ width: "100%", padding: "9px 12px", borderRadius: 10, border: `1.5px solid ${theme.border}`, fontFamily: "Georgia, serif", fontSize: 13, background: theme.bodyBg, marginBottom: 8, boxSizing: "border-box" }} />
+      <textarea value={newMilestoneNotes} onChange={e => setNewMilestoneNotes(e.target.value)} placeholder="Notes (optional) — any context or details..." rows={2} style={{ width: "100%", padding: "9px 12px", borderRadius: 10, border: `1.5px solid ${theme.border}`, fontFamily: "Georgia, serif", fontSize: 12, background: theme.bodyBg, marginBottom: 8, boxSizing: "border-box", resize: "none" }} />
+      <div style={{ display: "flex", gap: 8 }}>
+        <input type="date" value={newMilestoneDate} onChange={e => setNewMilestoneDate(e.target.value)} style={{ flex: 1, padding: "8px 10px", borderRadius: 10, border: `1.5px solid ${theme.border}`, fontFamily: "Georgia, serif", fontSize: 13, background: theme.bodyBg }} />
+        <button onClick={() => {
+          if (!newMilestone.trim()) return;
+          const entry = { id: Date.now(), text: newMilestone.trim(), date: newMilestoneDate, notes: newMilestoneNotes.trim(), by: userId, byName: userName, category: "custom" };
+          const base = shared || {};
+          const next = { ...base, milestones: [...(Array.isArray(base.milestones) ? base.milestones : []), entry] };
+          setNewMilestone(""); setNewMilestoneNotes("");
+          window._saveShared && window._saveShared(next);
+        }} style={{ background: theme.accent, color: "#fff", border: "none", borderRadius: 10, padding: "8px 16px", cursor: "pointer", fontFamily: "Georgia, serif", fontSize: 13, fontWeight: "bold" }}>Add</button>
+      </div>
+    </div>
+
+    {/* Upcoming milestones */}
+    {upcomingMilestones.length > 0 && (
+      <div style={{ background: theme.cardBg, borderRadius: 14, padding: "14px", marginBottom: 14, border: `1.5px solid ${theme.border}` }}>
+        <div style={{ fontSize: 12, fontWeight: "bold", color: theme.textDark, marginBottom: 10 }}>Coming up</div>
+        {upcomingMilestones.slice(0, 4).map((m, i) => {
+          const days = daysUntil(m.date);
+          const color = categoryColors[m.category] || theme.accent;
+          return (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: i < Math.min(upcomingMilestones.length, 4)-1 ? `1px solid ${theme.border}` : "none" }}>
+              <div style={{ width: 36, height: 36, borderRadius: 10, background: color+"20", border: `1.5px solid ${color}40`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                <div style={{ textAlign: "center" }}>
+                  <div style={{ fontSize: 12, fontWeight: "bold", color }}>{days}</div>
+                  <div style={{ fontSize: 8, color: theme.textLight }}>days</div>
+                </div>
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 12, color: theme.textDark }}>{m.text}</div>
+                <div style={{ fontSize: 10, color: theme.textLight, marginTop: 1 }}>{formatDate(m.date)}</div>
+              </div>
+              <button onClick={() => {
+                const entry = { id: Date.now(), text: m.text + " (completed early)", date: new Date().toISOString().slice(0,10), by: userId, byName: userName, category: m.category };
+                const base = shared || {};
+                const next = { ...base, milestones: [...(Array.isArray(base.milestones) ? base.milestones : []), entry] };
+                window._saveShared && window._saveShared(next);
+              }} style={{ background: "#7cb87c20", border: "1.5px solid #7cb87c60", borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontFamily: "Georgia, serif", fontSize: 11, color: "#7cb87c", fontWeight: "bold", flexShrink: 0, whiteSpace: "nowrap" }}>
+                Done!
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    )}
+
+    {/* Dachshund milestone outline */}
+    <button onClick={() => setShowOutline(o => !o)} style={{ width: "100%", background: theme.cardBg, border: `1.5px solid ${theme.border}`, borderRadius: 14, padding: "12px 14px", cursor: "pointer", fontFamily: "Georgia, serif", display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+      <span style={{ fontSize: 12, fontWeight: "bold", color: theme.textDark }}>🐾 Dachshund Development Guide</span>
+      <span style={{ fontSize: 14, color: theme.textLight }}>{showOutline ? "^" : "v"}</span>
+    </button>
+    {showOutline && (
+      <div style={{ background: theme.cardBg, borderRadius: 14, padding: "14px", marginBottom: 14, border: `1.5px solid ${theme.border}` }}>
+        {[
+          { period: "Weeks 3-4", title: "Eyes & ears open", items: ["Eyes and ears fully open", "Beginning to walk and explore", "Milk teeth start coming in"] },
+          { period: "Weeks 4-7", title: "Socialization begins", items: ["Critical socialization window opens", "Learning bite inhibition from littermates", "First solid food introduction"] },
+          { period: "Weeks 8-12", title: "Comes home! 🏠", items: ["Ideal age to join your family", "First vet visit & vaccines", "Rapid learning — begin crate training now", "Bond formation with family", "Start name recognition"] },
+          { period: "3-4 Months", title: "Exploring & testing", items: ["Vaccines complete around 14-16 weeks", "Rabies vaccine at 16 weeks", "Teething begins — provide chew toys", "Start puppy classes", "Bladder control improving"] },
+          { period: "4-6 Months", title: "Adolescence begins", items: ["Spay/neuter window", "Adult teeth coming in (4-6 months)", "May start testing boundaries", "Continue socialization with dogs & people", "Short leashed walks OK"] },
+          { period: "6-9 Months", title: "Growing up", items: ["Switch to adult food", "IVDD awareness increases — limit jumping", "Most basic commands should be solid", "Annual vet visit + boosters", "Hormonal changes if not spayed/neutered"] },
+          { period: "9-12 Months", title: "Nearly adult", items: ["Approaching adult size & weight", "Personality fully emerging", "Keep up with spine protection habits", "Professional grooming routine established", "Preparing for adult routines"] },
+          { period: "1 Year+", title: "Adult dachshund 🎂", items: ["Full adult at 12 months", "Annual vet visits ongoing", "Long-haired coat fully developed", "IVDD risk management for life", "Expected lifespan 12-16 years"] },
+        ].map((section, i) => (
+          <div key={i} style={{ marginBottom: i < 7 ? 14 : 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+              <div style={{ background: theme.accent, borderRadius: 6, padding: "2px 8px" }}>
+                <span style={{ fontSize: 10, color: "#fff", fontWeight: "bold" }}>{section.period}</span>
+              </div>
+              <span style={{ fontSize: 12, fontWeight: "bold", color: theme.textDark }}>{section.title}</span>
+            </div>
+            {section.items.map((item, j) => (
+              <div key={j} style={{ display: "flex", alignItems: "flex-start", gap: 6, marginBottom: 4, paddingLeft: 4 }}>
+                <div style={{ width: 5, height: 5, borderRadius: "50%", background: theme.accent+"80", marginTop: 5, flexShrink: 0 }} />
+                <span style={{ fontSize: 11, color: theme.textMid, lineHeight: 1.4 }}>{item}</span>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    )}
+
+    {/* Past timeline */}
+    <div style={{ background: theme.cardBg, borderRadius: 14, padding: "14px", border: `1.5px solid ${theme.border}` }}>
+      <div style={{ fontSize: 12, fontWeight: "bold", color: theme.textDark, marginBottom: 12 }}>Timeline</div>
+      {allPast.length === 0 && <div style={{ fontSize: 11, color: theme.textLight }}>Milestones will appear here as Noodle grows.</div>}
+      {allPast.map((m, i) => {
+        const color = categoryColors[m.category] || theme.accent;
+        const isEditing = !!(editingMilestone && editingMilestone.id === m.id);
+        return (
+          <div key={m.id || i} style={{ display: "flex", gap: 12, paddingBottom: 14 }}>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", flexShrink: 0 }}>
+              <div style={{ width: 12, height: 12, borderRadius: "50%", background: m.auto ? theme.textLight : color, marginTop: 3, flexShrink: 0 }} />
+              {i < allPast.length-1 && <div style={{ width: 2, flex: 1, background: theme.border, marginTop: 2 }} />}
+            </div>
+            <div style={{ flex: 1 }}>
+              {isEditing ? (
+                <div style={{ background: theme.tabBg, borderRadius: 10, padding: "10px", border: `1.5px solid ${theme.accent}` }}>
+                  <input value={editingMilestone ? editingMilestone.text : ""} onChange={e => setEditingMilestone(em => em ? ({ ...em, text: e.target.value }) : em)} style={{ width: "100%", padding: "7px 10px", borderRadius: 8, border: `1px solid ${theme.border}`, fontFamily: "Georgia, serif", fontSize: 12, background: theme.bodyBg, marginBottom: 7, boxSizing: "border-box" }} />
+                  <textarea value={editingMilestone ? (editingMilestone.notes || "") : ""} onChange={e => setEditingMilestone(em => em ? ({ ...em, notes: e.target.value }) : em)} placeholder="Notes (optional)..." rows={2} style={{ width: "100%", padding: "7px 10px", borderRadius: 8, border: `1px solid ${theme.border}`, fontFamily: "Georgia, serif", fontSize: 11, background: theme.bodyBg, marginBottom: 7, boxSizing: "border-box", resize: "none" }} />
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 8 }}>
+                    <span style={{ fontSize: 11, color: theme.textMid, flexShrink: 0 }}>Date:</span>
+                    <input type="date" value={editingMilestone ? editingMilestone.date : ""} onChange={e => setEditingMilestone(em => em ? ({ ...em, date: e.target.value }) : em)} style={{ flex: 1, padding: "6px 9px", borderRadius: 8, border: `1px solid ${theme.border}`, fontFamily: "Georgia, serif", fontSize: 12, background: theme.bodyBg }} />
+                  </div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button onClick={() => {
+                      const base = shared || {};
+                      const next = { ...base, milestones: (base.milestones || []).map(x => x.id === editingMilestone.id ? { ...x, text: editingMilestone.text, date: editingMilestone.date, notes: editingMilestone.notes || "" } : x) };
+                      window._saveShared && window._saveShared(next);
+                      setEditingMilestone(null);
+                    }} style={{ flex: 1, background: theme.accent, color: "#fff", border: "none", borderRadius: 8, padding: "7px", cursor: "pointer", fontSize: 12, fontFamily: "Georgia, serif", fontWeight: "bold" }}>Save</button>
+                    <button onClick={() => setEditingMilestone(null)} style={{ background: theme.tabBg, border: `1px solid ${theme.border}`, color: theme.textMid, borderRadius: 8, padding: "7px 12px", cursor: "pointer", fontSize: 12, fontFamily: "Georgia, serif" }}>Cancel</button>
+                  </div>
+                </div>
+              ) : (<>
+                <div style={{ fontSize: 12, color: theme.textDark, fontWeight: m.auto ? "normal" : "bold" }}>{m.text}</div>
+                <div style={{ fontSize: 10, color: theme.textLight, marginTop: 2 }}>
+                  {formatDate(m.date)}
+                  {m.byName && !m.auto && <span style={{ marginLeft: 6 }}>· {m.byName}</span>}
+                  {m.category && <span style={{ marginLeft: 6, color: categoryColors[m.category] || theme.accent, fontWeight: "bold" }}>{categoryLabels[m.category] || "Custom"}</span>}
+                </div>
+                {m.notes && <div style={{ fontSize: 11, color: theme.textMid, marginTop: 4, fontStyle: "italic", background: theme.tabBg, borderRadius: 6, padding: "4px 8px" }}>{m.notes}</div>}
+                {!m.auto && (
+                  <button onClick={() => setEditingMilestone({ id: m.id, text: m.text, date: m.date, notes: m.notes || "" })} style={{ marginTop: 5, background: "none", border: `1px solid ${theme.border}`, borderRadius: 6, padding: "3px 9px", cursor: "pointer", fontSize: 10, color: theme.textMid, fontFamily: "Georgia, serif" }}>
+                    Edit
+                  </button>
+                )}
+              </>)}
+            </div>
+            {!m.auto && !isEditing && (
+              confirmDeleteId === (m.id || i) ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, flexShrink: 0, alignSelf: "flex-start" }}>
+                  <div style={{ fontSize: 10, color: "#e87c7c", fontWeight: "bold", textAlign: "right" }}>Remove?</div>
+                  <div style={{ display: "flex", gap: 4 }}>
+                    <button onClick={() => {
+                      const base = shared || {};
+                      const next = { ...base, milestones: (base.milestones || []).filter(x => x.id !== m.id) };
+                      window._saveShared && window._saveShared(next);
+                      setConfirmDeleteId(null);
+                    }} style={{ background: "#e87c7c", color: "#fff", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontSize: 10, fontWeight: "bold" }}>Yes</button>
+                    <button onClick={() => setConfirmDeleteId(null)} style={{ background: theme.tabBg, color: theme.textMid, border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontSize: 10 }}>No</button>
+                  </div>
+                </div>
+              ) : (
+                <button onClick={() => setConfirmDeleteId(m.id || i)} style={{ background: "none", border: "none", color: theme.textLight, cursor: "pointer", fontSize: 12, flexShrink: 0, alignSelf: "flex-start" }}>x</button>
+              )
+            )}
+          </div>
+        );
+      })}
+    </div>
+  </>);
+}
+
+// -- NOODS CLUES ANALYTICS ----------------------------------------------------
+function NoodsClues({ shared, userId, userName, theme, PHASES }) {
+  const [section, setSection] = window._useState("potty");
+  const [weightInput, setWeightInput] = window._useState("");
+
+  const comp  = shared?.completions || {};
+  const users = shared?.users || {};
+  const allUids = Object.keys(users);
+
+  // Build last 30 days array
+  const days30 = Array.from({ length: 30 }, (_, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() - (29 - i));
+    return d.toDateString();
+  });
+  const days14 = days30.slice(16);
+  const days7  = days30.slice(23);
+
+  // ── POTTY DATA ──────────────────────────────────────────────────────────────
+  function getPottyBreaksForDay(ds) {
+    const breaks = [];
+    for (let slot = 0; slot < 12; slot++) {
+      for (const uid of allUids) {
+        const key = `p1_2_potty${slot}_${ds}_${uid}`;
+        const val = comp[key];
+        if (val && typeof val === "object") {
+          const types = val.types ? Object.values(val.types).map(String) : [];
+          breaks.push({ slot, uid, time: val.time || "", types, hasPee: types.includes("Pee"), hasPoop: types.includes("Poop") });
+          break;
+        }
+      }
+    }
+    return breaks;
+  }
+
+  const pottyByDay = days30.map(ds => ({ ds, breaks: getPottyBreaksForDay(ds) }));
+  const maxBreaks = Math.max(...pottyByDay.map(d => d.breaks.length), 1);
+
+  // Time of day buckets
+  const timeBuckets = { "12-6am": 0, "6-9am": 0, "9am-12pm": 0, "12-3pm": 0, "3-6pm": 0, "6-9pm": 0, "9pm-12am": 0 };
+  pottyByDay.forEach(({ breaks }) => breaks.forEach(b => {
+    if (!b.time) return;
+    const h = parseInt(b.time.split(":")[0], 10);
+    if (h < 6) timeBuckets["12-6am"]++;
+    else if (h < 9) timeBuckets["6-9am"]++;
+    else if (h < 12) timeBuckets["9am-12pm"]++;
+    else if (h < 15) timeBuckets["12-3pm"]++;
+    else if (h < 18) timeBuckets["3-6pm"]++;
+    else if (h < 21) timeBuckets["6-9pm"]++;
+    else timeBuckets["9pm-12am"]++;
+  }));
+  const maxBucket = Math.max(...Object.values(timeBuckets), 1);
+
+  // Type breakdown
+  let totalPee = 0, totalPoop = 0, totalBoth = 0;
+  pottyByDay.forEach(({ breaks }) => breaks.forEach(b => {
+    if (b.hasPee && b.hasPoop) totalBoth++;
+    else if (b.hasPee) totalPee++;
+    else if (b.hasPoop) totalPoop++;
+  }));
+  const totalTyped = totalPee + totalPoop + totalBoth;
+
+  // Who logs more
+  const pottyByUser = {};
+  allUids.forEach(uid => { pottyByUser[uid] = 0; });
+  pottyByDay.forEach(({ breaks }) => breaks.forEach(b => { if (pottyByUser[b.uid] !== undefined) pottyByUser[b.uid]++; }));
+
+  // Streak: consecutive days with at least 1 potty break logged
+  let pottyStreak = 0;
+  for (let i = days30.length - 1; i >= 0; i--) {
+    if (pottyByDay[i].breaks.length > 0) pottyStreak++;
+    else break;
+  }
+
+  // ── FEEDING DATA ────────────────────────────────────────────────────────────
+  function getMealsForDay(ds) {
+    let count = 0;
+    const mealKeys = ["p1_1", "p2_1", "p3_1"];
+    for (const tid of mealKeys) {
+      for (let m = 0; m < 3; m++) {
+        for (const uid of allUids) {
+          const key = `${tid}_meal${m}_${ds}_${uid}`;
+          if (comp[key]) { count++; break; }
+        }
+      }
+    }
+    return count;
+  }
+  const feedByDay = days30.map(ds => ({ ds, meals: getMealsForDay(ds) }));
+  const maxMeals = 3;
+
+  // Who feeds more
+  const feedByUser = {};
+  allUids.forEach(uid => { feedByUser[uid] = 0; });
+  days30.forEach(ds => {
+    ["p1_1","p2_1","p3_1"].forEach(tid => {
+      for (let m = 0; m < 3; m++) {
+        allUids.forEach(uid => { if (comp[`${tid}_meal${m}_${ds}_${uid}`]) feedByUser[uid]++; });
+      }
+    });
+  });
+
+  // Meal time-of-day buckets
+  const mealTimeBuckets = { "5-8am": 0, "8-10am": 0, "10am-12pm": 0, "12-2pm": 0, "2-4pm": 0, "4-6pm": 0, "6-8pm": 0, "8pm+": 0 };
+  const mealTimeEntries = []; // { label, time, mealIdx } for per-meal breakdown
+  days30.forEach(ds => {
+    ["p1_1","p2_1","p3_1"].forEach(tid => {
+      for (let mealIdx = 0; mealIdx < 3; mealIdx++) {
+        allUids.forEach(uid => {
+          const val = comp[`${tid}_meal${mealIdx}_${ds}_${uid}`];
+          if (val && typeof val === "object" && val.time) {
+            const h = parseInt(val.time.split(":")[0], 10);
+            if (h < 8)       mealTimeBuckets["5-8am"]++;
+            else if (h < 10) mealTimeBuckets["8-10am"]++;
+            else if (h < 12) mealTimeBuckets["10am-12pm"]++;
+            else if (h < 14) mealTimeBuckets["12-2pm"]++;
+            else if (h < 16) mealTimeBuckets["2-4pm"]++;
+            else if (h < 18) mealTimeBuckets["4-6pm"]++;
+            else if (h < 20) mealTimeBuckets["6-8pm"]++;
+            else             mealTimeBuckets["8pm+"]++;
+            mealTimeEntries.push({ mealIdx, time: val.time, h });
+          }
+        });
+      }
+    });
+  });
+  const maxMealBucket = Math.max(...Object.values(mealTimeBuckets), 1);
+  const totalMealTimed = Object.values(mealTimeBuckets).reduce((a,b) => a+b, 0);
+
+  // Average time per meal slot
+  const mealSlotTimes = [[], [], []]; // morning, midday, evening
+  mealTimeEntries.forEach(e => { if (mealSlotTimes[e.mealIdx]) mealSlotTimes[e.mealIdx].push(e.h); });
+  const avgMealTime = mealSlotTimes.map(times => {
+    if (!times.length) return null;
+    const avg = times.reduce((a,b) => a+b,0) / times.length;
+    const h = Math.floor(avg);
+    const ampm = h >= 12 ? "PM" : "AM";
+    const h12 = h > 12 ? h - 12 : h === 0 ? 12 : h;
+    return `~${h12}${ampm}`;
+  });
+  const mealSlotNames = ["Morning", "Midday/Afternoon", "Evening"];
+
+  // ── TASK COMPLETION DATA ─────────────────────────────────────────────────────
+  function getDayCompletion(ds) {
+    const allTasks = PHASES.flatMap(p => p.tasks.filter(t => {
+      if (t.frequency === "weekly") return new Date(ds).getDay() === 5;
+      return true;
+    }));
+    if (!allTasks.length) return 0;
+    const done = allTasks.filter(t => allUids.some(uid => comp[`${t.id}_${ds}_${uid}`])).length;
+    return Math.round((done / allTasks.length) * 100);
+  }
+  const completionByDay = days30.map(ds => ({ ds, pct: getDayCompletion(ds) }));
+
+  // Streak: consecutive days with 100% completion
+  let completionStreak = 0;
+  for (let i = completionByDay.length - 1; i >= 0; i--) {
+    if (completionByDay[i].pct === 100) completionStreak++;
+    else break;
+  }
+
+  // Most skipped tasks
+  const taskSkips = {};
+  PHASES.forEach(p => p.tasks.forEach(t => {
+    const skipped = days30.filter(ds => {
+      const show = t.frequency === "weekly" ? new Date(ds).getDay() === 5 : true;
+      if (!show) return false;
+      return !allUids.some(uid => comp[`${t.id}_${ds}_${uid}`]);
+    }).length;
+    taskSkips[t.id] = { text: t.text, skipped, phase: p.label };
+  }));
+  const topSkipped = Object.values(taskSkips).sort((a, b) => b.skipped - a.skipped).slice(0, 5);
+
+  // You vs partner contribution
+  const contribByUser = {};
+  allUids.forEach(uid => { contribByUser[uid] = 0; });
+  Object.keys(comp).forEach(key => {
+    allUids.forEach(uid => { if (key.endsWith("_" + uid)) contribByUser[uid]++; });
+  });
+  const totalContrib = Math.max(Object.values(contribByUser).reduce((a, b) => a + b, 0), 1);
+
+  // ── WEIGHT DATA ──────────────────────────────────────────────────────────────
+  const weights = Array.isArray(shared?.weights) ? shared.weights : [];
+
+  // ── MILESTONE DATA ───────────────────────────────────────────────────────────
+  const milestones = Array.isArray(shared?.milestones) ? shared.milestones : [];
+
+  // ── HELPERS ──────────────────────────────────────────────────────────────────
+  const avg = (arr) => arr.length ? (arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(1) : "0";
+  const shortDate = (ds) => { const [y,mo,d] = ds.split("-").map(Number); return mo+"/"+d; };
+
+  const barColor = theme.accent;
+  const BAR_H = 48;
+
+  const sections = [
+    { id: "potty", label: "🚽", title: "Potty" },
+    { id: "feeding", label: "🍽️", title: "Feeding" },
+    { id: "tasks", label: "✓", title: "Tasks" },
+    { id: "weight", label: "⚖️", title: "Weight" },
+    { id: "milestones", label: "⭐", title: "Milestones" },
+  ];
+
+  return (
+    <div style={{ background: theme.pageBg, minHeight: "100vh" }}>
+      {/* Section tabs */}
+      <div style={{ display: "flex", background: theme.tabBg, overflowX: "auto", borderBottom: `1px solid ${theme.border}` }}>
+        {sections.map(s => (
+          <button key={s.id} onClick={() => setSection(s.id)} style={{
+            flex: 1, minWidth: 60, padding: "10px 4px", border: "none", cursor: "pointer",
+            background: section === s.id ? theme.accent : "transparent",
+            color: section === s.id ? "#fff" : theme.textMid,
+            fontFamily: "Georgia, serif", fontSize: 10, fontWeight: section === s.id ? "bold" : "normal",
+            borderBottom: section === s.id ? `3px solid ${theme.nav}` : "3px solid transparent",
+          }}>
+            <div style={{ fontSize: 18 }}>{s.label}</div>
+            <div>{s.title}</div>
+          </button>
+        ))}
+      </div>
+
+      <div style={{ padding: "16px 14px", maxWidth: 600, margin: "0 auto" }}>
+
+        {/* ── POTTY ── */}
+        {section === "potty" && (<>
+          <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+            {[
+              { label: "Avg/day (7d)", value: avg(days7.map(ds => getPottyBreaksForDay(ds).length)) },
+              { label: "Today", value: getPottyBreaksForDay(new Date().toDateString()).length },
+              { label: "Streak", value: pottyStreak + "d" },
+            ].map(s => (
+              <div key={s.label} style={{ flex: 1, background: theme.cardBg, borderRadius: 12, padding: "12px 10px", textAlign: "center", border: `1.5px solid ${theme.border}` }}>
+                <div style={{ fontSize: 22, fontWeight: "bold", color: theme.accent }}>{s.value}</div>
+                <div style={{ fontSize: 10, color: theme.textLight, marginTop: 2 }}>{s.label}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Daily breaks chart */}
+          <div style={{ background: theme.cardBg, borderRadius: 14, padding: "14px", marginBottom: 14, border: `1.5px solid ${theme.border}` }}>
+            <div style={{ fontSize: 12, fontWeight: "bold", color: theme.textDark, marginBottom: 10 }}>Breaks per day (30d)</div>
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height: BAR_H }}>
+              {pottyByDay.map(({ ds, breaks }, i) => (
+                <div key={i} title={shortDate(ds) + ": " + breaks.length} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%" }}>
+                  <div style={{ width: "100%", background: breaks.length > 0 ? barColor : theme.border, borderRadius: 3, height: Math.max(2, (breaks.length / maxBreaks) * BAR_H) }} />
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+              <span style={{ fontSize: 9, color: theme.textLight }}>{shortDate(days30[0])}</span>
+              <span style={{ fontSize: 9, color: theme.textLight }}>Today</span>
+            </div>
+          </div>
+
+          {/* Time of day */}
+          <div style={{ background: theme.cardBg, borderRadius: 14, padding: "14px", marginBottom: 14, border: `1.5px solid ${theme.border}` }}>
+            <div style={{ fontSize: 12, fontWeight: "bold", color: theme.textDark, marginBottom: 10 }}>When does she usually go?</div>
+            {Object.entries(timeBuckets).map(([label, count]) => (
+              <div key={label} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <div style={{ fontSize: 10, color: theme.textMid, width: 70, flexShrink: 0 }}>{label}</div>
+                <div style={{ flex: 1, height: 14, background: theme.tabBg, borderRadius: 4, overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: `${(count / maxBucket) * 100}%`, background: barColor, borderRadius: 4 }} />
+                </div>
+                <div style={{ fontSize: 10, color: theme.textLight, width: 20, textAlign: "right" }}>{count}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Pee vs Poop */}
+          <div style={{ background: theme.cardBg, borderRadius: 14, padding: "14px", marginBottom: 14, border: `1.5px solid ${theme.border}` }}>
+            <div style={{ fontSize: 12, fontWeight: "bold", color: theme.textDark, marginBottom: 10 }}>Type breakdown (30d)</div>
+            {totalTyped === 0 ? <div style={{ fontSize: 11, color: theme.textLight }}>No type data logged yet.</div> : (
+              <div style={{ display: "flex", gap: 8 }}>
+                {[["💧 Pee", totalPee, "#6b9fc4"], ["💩 Poop", totalPoop, "#c4a96b"], ["Both", totalBoth, "#9c7cb8"]].map(([lbl, count, color]) => (
+                  <div key={lbl} style={{ flex: 1, background: color+"20", border: `1.5px solid ${color}40`, borderRadius: 10, padding: "10px 6px", textAlign: "center" }}>
+                    <div style={{ fontSize: 18 }}>{lbl.split(" ")[0]}</div>
+                    <div style={{ fontSize: 16, fontWeight: "bold", color: theme.textDark }}>{count}</div>
+                    <div style={{ fontSize: 9, color: theme.textLight }}>{totalTyped ? Math.round((count/totalTyped)*100) : 0}%</div>
+                    <div style={{ fontSize: 10, color: theme.textMid }}>{lbl.split(" ").slice(1).join(" ") || lbl}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Who logs potty */}
+          <div style={{ background: theme.cardBg, borderRadius: 14, padding: "14px", border: `1.5px solid ${theme.border}` }}>
+            <div style={{ fontSize: 12, fontWeight: "bold", color: theme.textDark, marginBottom: 10 }}>Who takes her out most?</div>
+            {allUids.map(uid => {
+              const u = users[uid];
+              const count = pottyByUser[uid] || 0;
+              const total = Math.max(Object.values(pottyByUser).reduce((a,b)=>a+b,0), 1);
+              return (
+                <div key={uid} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  <div style={{ width: 28, height: 28, borderRadius: "50%", background: u.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, flexShrink: 0 }}>{u.avatar}</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+                      <span style={{ fontSize: 11, fontWeight: "bold", color: theme.textDark }}>{uid === userId ? "You" : u.name}</span>
+                      <span style={{ fontSize: 11, color: theme.textLight }}>{count} breaks</span>
+                    </div>
+                    <div style={{ height: 8, background: theme.tabBg, borderRadius: 4, overflow: "hidden" }}>
+                      <div style={{ height: "100%", width: `${(count/total)*100}%`, background: u.color, borderRadius: 4 }} />
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>)}
+
+        {/* ── FEEDING ── */}
+        {section === "feeding" && (<>
+          <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+            {[
+              { label: "Avg meals/day", value: avg(feedByDay.map(d => d.meals)) },
+              { label: "Today", value: getMealsForDay(new Date().toDateString()) + "/3" },
+              { label: "Full days (30d)", value: feedByDay.filter(d => d.meals >= 3).length },
+            ].map(s => (
+              <div key={s.label} style={{ flex: 1, background: theme.cardBg, borderRadius: 12, padding: "12px 10px", textAlign: "center", border: `1.5px solid ${theme.border}` }}>
+                <div style={{ fontSize: 22, fontWeight: "bold", color: theme.accent }}>{s.value}</div>
+                <div style={{ fontSize: 10, color: theme.textLight, marginTop: 2 }}>{s.label}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ background: theme.cardBg, borderRadius: 14, padding: "14px", marginBottom: 14, border: `1.5px solid ${theme.border}` }}>
+            <div style={{ fontSize: 12, fontWeight: "bold", color: theme.textDark, marginBottom: 10 }}>Meals logged per day (30d)</div>
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height: BAR_H }}>
+              {feedByDay.map(({ ds, meals }, i) => (
+                <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%" }}>
+                  <div style={{ width: "100%", background: meals >= 3 ? "#7cb87c" : meals > 0 ? "#e8c45c" : theme.border, borderRadius: 3, height: Math.max(2, (meals / maxMeals) * BAR_H) }} />
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+              <span style={{ fontSize: 9, color: theme.textLight }}>{shortDate(days30[0])}</span>
+              <span style={{ fontSize: 9, color: theme.textLight }}>Today</span>
+            </div>
+            <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+              {[["#7cb87c","All 3 meals"],["#e8c45c","1-2 meals"],[theme.border,"None"]].map(([c,l]) => (
+                <div key={l} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <div style={{ width: 8, height: 8, borderRadius: 2, background: c }} />
+                  <span style={{ fontSize: 9, color: theme.textLight }}>{l}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ background: theme.cardBg, borderRadius: 14, padding: "14px", marginBottom: 14, border: `1.5px solid ${theme.border}` }}>
+            <div style={{ fontSize: 12, fontWeight: "bold", color: theme.textDark, marginBottom: 4 }}>When does she typically eat?</div>
+            <div style={{ fontSize: 10, color: theme.textLight, marginBottom: 10 }}>Based on logged meal times (30d)</div>
+            {totalMealTimed === 0 ? (
+              <div style={{ fontSize: 11, color: theme.textLight, fontStyle: "italic" }}>No meal times logged yet — tap to add a time when logging each meal.</div>
+            ) : (<>
+              {Object.entries(mealTimeBuckets).map(([label, count]) => (
+                <div key={label} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                  <div style={{ fontSize: 10, color: theme.textMid, width: 72, flexShrink: 0 }}>{label}</div>
+                  <div style={{ flex: 1, height: 14, background: theme.tabBg, borderRadius: 4, overflow: "hidden" }}>
+                    <div style={{ height: "100%", width: `${(count / maxMealBucket) * 100}%`, background: barColor, borderRadius: 4, transition: "width 0.3s" }} />
+                  </div>
+                  <div style={{ fontSize: 10, color: theme.textLight, width: 18, textAlign: "right" }}>{count}</div>
+                </div>
+              ))}
+
+              {/* Average time per meal slot */}
+              <div style={{ marginTop: 12, borderTop: `1px solid ${theme.border}`, paddingTop: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: "bold", color: theme.textDark, marginBottom: 8 }}>Average time per meal</div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {mealSlotNames.map((name, i) => (
+                    <div key={i} style={{ flex: 1, background: theme.tabBg, borderRadius: 10, padding: "8px 6px", textAlign: "center" }}>
+                      <div style={{ fontSize: 16, fontWeight: "bold", color: avgMealTime[i] ? barColor : theme.textLight }}>
+                        {avgMealTime[i] || "--"}
+                      </div>
+                      <div style={{ fontSize: 9, color: theme.textLight, marginTop: 2 }}>{name}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>)}
+          </div>
+
+          <div style={{ background: theme.cardBg, borderRadius: 14, padding: "14px", border: `1.5px solid ${theme.border}` }}>
+            <div style={{ fontSize: 12, fontWeight: "bold", color: theme.textDark, marginBottom: 10 }}>Who feeds her most?</div>
+            {allUids.map(uid => {
+              const u = users[uid];
+              const count = feedByUser[uid] || 0;
+              const total = Math.max(Object.values(feedByUser).reduce((a,b)=>a+b,0), 1);
+              return (
+                <div key={uid} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  <div style={{ width: 28, height: 28, borderRadius: "50%", background: u.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, flexShrink: 0 }}>{u.avatar}</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+                      <span style={{ fontSize: 11, fontWeight: "bold", color: theme.textDark }}>{uid === userId ? "You" : u.name}</span>
+                      <span style={{ fontSize: 11, color: theme.textLight }}>{count} meals</span>
+                    </div>
+                    <div style={{ height: 8, background: theme.tabBg, borderRadius: 4, overflow: "hidden" }}>
+                      <div style={{ height: "100%", width: `${(count/total)*100}%`, background: u.color, borderRadius: 4 }} />
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>)}
+
+        {/* ── TASKS ── */}
+        {section === "tasks" && (<>
+          <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+            {[
+              { label: "Avg completion", value: avg(completionByDay.map(d => d.pct)) + "%" },
+              { label: "100% streak", value: completionStreak + "d" },
+              { label: "Best (30d)", value: Math.max(...completionByDay.map(d => d.pct)) + "%" },
+            ].map(s => (
+              <div key={s.label} style={{ flex: 1, background: theme.cardBg, borderRadius: 12, padding: "12px 10px", textAlign: "center", border: `1.5px solid ${theme.border}` }}>
+                <div style={{ fontSize: 22, fontWeight: "bold", color: theme.accent }}>{s.value}</div>
+                <div style={{ fontSize: 10, color: theme.textLight, marginTop: 2 }}>{s.label}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ background: theme.cardBg, borderRadius: 14, padding: "14px", marginBottom: 14, border: `1.5px solid ${theme.border}` }}>
+            <div style={{ fontSize: 12, fontWeight: "bold", color: theme.textDark, marginBottom: 10 }}>Daily completion % (30d)</div>
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height: BAR_H }}>
+              {completionByDay.map(({ ds, pct }, i) => (
+                <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%" }}>
+                  <div style={{ width: "100%", background: pct >= 100 ? "#7cb87c" : pct >= 50 ? "#e8c45c" : pct > 0 ? barColor : theme.border, borderRadius: 3, height: Math.max(2, (pct / 100) * BAR_H) }} />
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+              <span style={{ fontSize: 9, color: theme.textLight }}>{shortDate(days30[0])}</span>
+              <span style={{ fontSize: 9, color: theme.textLight }}>Today</span>
+            </div>
+          </div>
+
+          <div style={{ background: theme.cardBg, borderRadius: 14, padding: "14px", marginBottom: 14, border: `1.5px solid ${theme.border}` }}>
+            <div style={{ fontSize: 12, fontWeight: "bold", color: theme.textDark, marginBottom: 10 }}>Most skipped tasks (30d)</div>
+            {topSkipped.map((t, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: i < topSkipped.length-1 ? `1px solid ${theme.border}` : "none" }}>
+                <div style={{ width: 22, height: 22, borderRadius: "50%", background: "#e87c7c30", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: "bold", color: "#e87c7c", flexShrink: 0 }}>{t.skipped}</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 12, color: theme.textDark }}>{t.text}</div>
+                  <div style={{ fontSize: 9, color: theme.textLight }}>{t.phase}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ background: theme.cardBg, borderRadius: 14, padding: "14px", border: `1.5px solid ${theme.border}` }}>
+            <div style={{ fontSize: 12, fontWeight: "bold", color: theme.textDark, marginBottom: 10 }}>Overall contribution (all time)</div>
+            {allUids.map(uid => {
+              const u = users[uid];
+              const count = contribByUser[uid] || 0;
+              return (
+                <div key={uid} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  <div style={{ width: 28, height: 28, borderRadius: "50%", background: u.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, flexShrink: 0 }}>{u.avatar}</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+                      <span style={{ fontSize: 11, fontWeight: "bold", color: theme.textDark }}>{uid === userId ? "You" : u.name}</span>
+                      <span style={{ fontSize: 11, color: theme.textLight }}>{Math.round((count/totalContrib)*100)}% ({count} logs)</span>
+                    </div>
+                    <div style={{ height: 10, background: theme.tabBg, borderRadius: 5, overflow: "hidden" }}>
+                      <div style={{ height: "100%", width: `${(count/totalContrib)*100}%`, background: u.color, borderRadius: 5 }} />
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>)}
+
+        {/* ── WEIGHT ── */}
+        {section === "weight" && (<>
+          <div style={{ background: theme.cardBg, borderRadius: 14, padding: "14px", marginBottom: 14, border: `1.5px solid ${theme.border}` }}>
+            <div style={{ fontSize: 12, fontWeight: "bold", color: theme.textDark, marginBottom: 12 }}>Log weight</div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input
+                value={weightInput}
+                onChange={e => setWeightInput(e.target.value)}
+                placeholder="e.g. 4.2"
+                type="number"
+                step="0.1"
+                style={{ flex: 1, padding: "9px 13px", borderRadius: 10, border: `1.5px solid ${theme.border}`, fontFamily: "Georgia, serif", fontSize: 14, background: theme.bodyBg }}
+              />
+              <span style={{ fontSize: 12, color: theme.textMid }}>lbs</span>
+              <button onClick={() => {
+                const w = parseFloat(weightInput);
+                if (isNaN(w) || w <= 0) return;
+                const entry = { id: Date.now(), weight: w, date: new Date().toISOString(), by: userId, byName: userName };
+                const base = shared || {};
+                const next = { ...base, weights: [...(Array.isArray(base.weights) ? base.weights : []), entry] };
+                setWeightInput("");
+                // trigger save via window event
+                window._saveShared && window._saveShared(next);
+              }} style={{ background: theme.accent, color: "#fff", border: "none", borderRadius: 10, padding: "9px 16px", cursor: "pointer", fontFamily: "Georgia, serif", fontSize: 13, fontWeight: "bold" }}>
+                Log
+              </button>
+            </div>
+          </div>
+
+          {weights.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "40px 20px", color: theme.textLight }}>
+              <div style={{ fontSize: 36, marginBottom: 8 }}>⚖️</div>
+              <div style={{ fontSize: 13 }}>No weight entries yet. Log Noodle's weight above to start tracking her growth!</div>
+            </div>
+          ) : (<>
+            {/* Growth chart */}
+            <div style={{ background: theme.cardBg, borderRadius: 14, padding: "14px", marginBottom: 14, border: `1.5px solid ${theme.border}` }}>
+              <div style={{ fontSize: 12, fontWeight: "bold", color: theme.textDark, marginBottom: 4 }}>Weight over time</div>
+              <div style={{ fontSize: 11, color: theme.textLight, marginBottom: 10 }}>
+                {weights[0]?.weight} lbs → {weights[weights.length-1]?.weight} lbs
+                {weights.length >= 2 && <span style={{ color: "#7cb87c", marginLeft: 6 }}>+{(weights[weights.length-1].weight - weights[0].weight).toFixed(1)} lbs gained</span>}
+              </div>
+              {(() => {
+                const minW = Math.min(...weights.map(w => w.weight));
+                const maxW = Math.max(...weights.map(w => w.weight));
+                const range = maxW - minW || 1;
+                return (
+                  <div style={{ display: "flex", alignItems: "flex-end", gap: 4, height: BAR_H }}>
+                    {weights.map((w, i) => (
+                      <div key={w.id} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%" }}>
+                        <div style={{ fontSize: 8, color: theme.textLight, marginBottom: 2 }}>{w.weight}</div>
+                        <div style={{ width: "100%", background: "#7cb87c", borderRadius: 3, height: Math.max(4, ((w.weight - minW) / range) * (BAR_H - 16) + 4) }} />
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Weight log */}
+            <div style={{ background: theme.cardBg, borderRadius: 14, padding: "14px", border: `1.5px solid ${theme.border}` }}>
+              <div style={{ fontSize: 12, fontWeight: "bold", color: theme.textDark, marginBottom: 10 }}>History</div>
+              {[...weights].reverse().map((w, i) => (
+                <div key={w.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: i < weights.length-1 ? `1px solid ${theme.border}` : "none" }}>
+                  <div>
+                    <span style={{ fontSize: 16, fontWeight: "bold", color: theme.textDark }}>{w.weight} lbs</span>
+                    {i < weights.length-1 && (() => {
+                      const prev = [...weights].reverse()[i+1];
+                      const diff = (w.weight - prev.weight).toFixed(1);
+                      return <span style={{ fontSize: 10, color: parseFloat(diff) >= 0 ? "#7cb87c" : "#e87c7c", marginLeft: 6 }}>{parseFloat(diff) >= 0 ? "+" : ""}{diff}</span>;
+                    })()}
+                  </div>
+                  <div style={{ fontSize: 10, color: theme.textLight }}>{new Date(w.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })} · {w.byName}</div>
+                </div>
+              ))}
+            </div>
+          </>)}
+        </>)}
+
+        {/* ── MILESTONES ── */}
+        {section === "milestones" && (
+          <MilestonesSection shared={shared} userId={userId} userName={userName} theme={theme} />
+        )}
+
+        <div style={{ height: 32 }} />
+      </div>
+    </div>
+  );
+}
+
+// -- AUDIT LOG VIEWER --------------------------------------------------------
+function AuditLogViewer({ theme }) {
+  const [open, setOpen] = window._useState(false);
+  const [log, setLog] = window._useState(null);
+  const [loading, setLoading] = window._useState(false);
+  const [filter, setFilter] = window._useState("all");
+
+  const actionLabels = {
+    check_task:          { label: "Checked task",       emoji: "✓", color: "#7cb87c" },
+    uncheck_task:        { label: "Unchecked task",     emoji: "✗", color: "#e87c7c" },
+    log_meal:            { label: "Logged meal",        emoji: "🍽️", color: "#e8c45c" },
+    unlog_meal:          { label: "Removed meal",       emoji: "🍽️", color: "#e87c7c" },
+    log_potty:           { label: "Logged potty break", emoji: "💧", color: "#6b9fc4" },
+    unlog_potty:         { label: "Removed potty",      emoji: "💧", color: "#e87c7c" },
+    save_note:           { label: "Added note",         emoji: "📝", color: "#c4a96b" },
+    change_name:         { label: "Changed name",       emoji: "👤", color: "#9c7cb8" },
+    change_dog_name:     { label: "Changed dog name",   emoji: "🐾", color: "#e8845c" },
+    set_profile_photo:   { label: "Updated header photo",emoji: "📸", color: "#e8845c" },
+    add_gallery_photo:   { label: "Added photo",        emoji: "📸", color: "#7cb87c" },
+    delete_gallery_photo:{ label: "Deleted photo",      emoji: "🗑️", color: "#e87c7c" },
+    update_caption:      { label: "Updated caption",    emoji: "✏️", color: "#c4a96b" },
+  };
+
+  const loadLog = async () => {
+    setLoading(true);
+    try {
+      const data = await window._loadAuditLog();
+      const arr = Array.isArray(data) ? data : Object.values(data || {});
+      setLog([...arr].reverse());
+    } catch(e) {
+      setLog([]);
+    }
+    setLoading(false);
+  };
+
+  const handleOpen = () => {
+    setOpen(true);
+    loadLog();
+  };
+
+  const allUsers = log ? [...new Set(log.map(e => e.name).filter(Boolean))] : [];
+  const filtered = log ? log.filter(e => filter === "all" || e.name === filter) : [];
+
+  const formatTime = (ts) => {
+    const d = new Date(ts);
+    return d.toLocaleDateString("en-US", { month: "short", day: "numeric" }) + " " +
+           d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+  };
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      <button onClick={handleOpen} style={{ width: "100%", background: theme.cardBg, border: `1.5px solid ${theme.border}`, borderRadius: 14, padding: "14px 18px", cursor: "pointer", fontFamily: "Georgia, serif", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: "bold", color: theme.textDark }}>📋 Audit Log</div>
+          <div style={{ fontSize: 11, color: theme.textLight, marginTop: 2 }}>See every action taken in the app</div>
+        </div>
+        <div style={{ fontSize: 18, color: theme.textLight }}>v</div>
+      </button>
+
+      {open && (
+        <div style={{ background: theme.cardBg, border: `1.5px solid ${theme.border}`, borderRadius: 14, marginTop: 6, overflow: "hidden" }}>
+          {/* Header */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 14px", borderBottom: `1px solid ${theme.border}` }}>
+            <div style={{ fontSize: 12, fontWeight: "bold", color: theme.textDark }}>Activity Log</div>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <button onClick={loadLog} style={{ background: theme.tabBg, border: `1px solid ${theme.border}`, borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontSize: 11, color: theme.textMid, fontFamily: "Georgia, serif" }}>Refresh</button>
+              <button onClick={() => setOpen(false)} style={{ background: "none", border: "none", fontSize: 16, cursor: "pointer", color: theme.textLight }}>x</button>
+            </div>
+          </div>
+
+          {/* Filter tabs */}
+          {allUsers.length > 1 && (
+            <div style={{ display: "flex", gap: 6, padding: "10px 14px", borderBottom: `1px solid ${theme.border}` }}>
+              {["all", ...allUsers].map(u => (
+                <button key={u} onClick={() => setFilter(u)} style={{ background: filter === u ? theme.accent : theme.tabBg, color: filter === u ? "#fff" : theme.textMid, border: "none", borderRadius: 8, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontFamily: "Georgia, serif", fontWeight: filter === u ? "bold" : "normal" }}>
+                  {u === "all" ? "Everyone" : u}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Log entries */}
+          <div style={{ maxHeight: 400, overflowY: "auto", padding: "8px 0" }}>
+            {loading && <div style={{ textAlign: "center", padding: 20, color: theme.textLight, fontSize: 12 }}>Loading...</div>}
+            {!loading && filtered.length === 0 && <div style={{ textAlign: "center", padding: 20, color: theme.textLight, fontSize: 12 }}>No activity logged yet.</div>}
+            {!loading && filtered.map((entry, i) => {
+              const meta = actionLabels[entry.action] || { label: entry.action, emoji: "•", color: theme.textLight };
+              return (
+                <div key={i} style={{ display: "flex", gap: 10, padding: "8px 14px", borderBottom: i < filtered.length-1 ? `1px solid ${theme.border}` : "none", alignItems: "flex-start" }}>
+                  <div style={{ width: 28, height: 28, borderRadius: 8, background: meta.color+"20", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, flexShrink: 0 }}>{meta.emoji}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 6 }}>
+                      <span style={{ fontSize: 12, fontWeight: "bold", color: theme.textDark }}>{meta.label}</span>
+                      <span style={{ fontSize: 10, color: theme.textLight, flexShrink: 0 }}>{formatTime(entry.ts)}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: meta.color, fontWeight: "bold", marginTop: 1 }}>{entry.name}</div>
+                    {entry.details && <div style={{ fontSize: 10, color: theme.textLight, marginTop: 2, fontFamily: "monospace", wordBreak: "break-all" }}>{entry.details}</div>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// -- GALLERY VIEW -------------------------------------------------------------
+function GalleryView({ shared, userId, userName, theme, onAddPhoto, onDeletePhoto, onUpdateCaption }) {
+  const gallery = Array.isArray(shared?.gallery) ? shared.gallery : [];
+  const [editingCaption, setEditingCaption] = window._useState(null);
+  const [captionText, setCaptionText] = window._useState("");
+  const [confirmDeletePhoto, setConfirmDeletePhoto] = window._useState(null);
+  const [lightbox, setLightbox] = window._useState(null);
+
+  return (
+    <div style={{ padding: "16px 14px", maxWidth: 600, margin: "0 auto" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <div style={{ fontSize: 18, fontWeight: "bold", color: theme.textDark }}>Noodle's Gallery</div>
+        <label style={{ background: theme.accent, color: "#fff", borderRadius: 12, padding: "8px 16px", cursor: "pointer", fontSize: 13, fontFamily: "Georgia, serif", fontWeight: "bold", display: "inline-block" }}>
+          + Add Photo
+          <input type="file" accept="image/*" style={{ display: "none" }} onChange={e => e.target.files[0] && onAddPhoto(e.target.files[0])} />
+        </label>
+      </div>
+
+      {gallery.length === 0 && (
+        <div style={{ textAlign: "center", padding: "60px 20px", color: theme.textLight }}>
+          <div style={{ fontSize: 48, marginBottom: 12 }}>📸</div>
+          <div style={{ fontSize: 15, marginBottom: 6 }}>No photos yet</div>
+          <div style={{ fontSize: 12 }}>Tap + Add Photo to start Noodle's gallery</div>
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        {gallery.map((photo) => (
+          <div key={photo.id} style={{ borderRadius: 12, overflow: "hidden", background: theme.cardBg, border: `1.5px solid ${theme.border}`, boxShadow: "0 1px 6px rgba(0,0,0,0.07)" }}>
+            <div style={{ position: "relative", paddingBottom: "100%", background: "#f0f0f0" }}>
+              <img src={photo.src} alt={photo.caption || "Noodle"} onClick={() => setLightbox(photo)} style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", objectFit: "cover", cursor: "pointer" }} />
+            </div>
+            <div style={{ padding: "8px 10px" }}>
+              {editingCaption === photo.id ? (
+                <div style={{ display: "flex", gap: 5 }}>
+                  <input value={captionText} onChange={e => setCaptionText(e.target.value)} onKeyDown={e => e.key === "Enter" && (onUpdateCaption(photo.id, captionText), setEditingCaption(null))} placeholder="Add caption..." autoFocus style={{ flex: 1, padding: "4px 7px", borderRadius: 6, border: `1px solid ${theme.border}`, fontFamily: "Georgia, serif", fontSize: 11, background: theme.bodyBg }} />
+                  <button onClick={() => { onUpdateCaption(photo.id, captionText); setEditingCaption(null); }} style={{ background: theme.accent, color: "#fff", border: "none", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 13 }}>v</button>
+                </div>
+              ) : (
+                <div style={{ fontSize: 11, color: photo.caption ? theme.textDark : theme.textLight, cursor: "pointer", marginBottom: 4 }} onClick={() => { setEditingCaption(photo.id); setCaptionText(photo.caption || ""); }}>
+                  {photo.caption || "Tap to add caption"}
+                </div>
+              )}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ fontSize: 9, color: theme.textLight }}>{photo.addedByName} · {new Date(photo.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</div>
+                {confirmDeletePhoto === photo.id ? (
+                  <div style={{ display: "flex", gap: 4 }}>
+                    <button onClick={() => { onDeletePhoto(photo.id); setConfirmDeletePhoto(null); }} style={{ background: "#e87c7c", color: "#fff", border: "none", borderRadius: 5, padding: "2px 7px", cursor: "pointer", fontSize: 10 }}>Delete</button>
+                    <button onClick={() => setConfirmDeletePhoto(null)} style={{ background: theme.tabBg, border: "none", borderRadius: 5, padding: "2px 7px", cursor: "pointer", fontSize: 10 }}>Cancel</button>
+                  </div>
+                ) : (
+                  <button onClick={() => setConfirmDeletePhoto(photo.id)} style={{ background: "none", border: "none", color: theme.textLight, cursor: "pointer", fontSize: 14 }}>x</button>
+                )}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {lightbox && (
+        <div onClick={() => setLightbox(null)} style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.92)", zIndex: 9999, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <img src={lightbox.src} alt={lightbox.caption || "Noodle"} style={{ maxWidth: "100%", maxHeight: "80vh", borderRadius: 12, objectFit: "contain" }} />
+          {lightbox.caption && <div style={{ color: "#fff", marginTop: 12, fontSize: 14, textAlign: "center" }}>{lightbox.caption}</div>}
+          <div style={{ color: "rgba(255,255,255,0.5)", marginTop: 8, fontSize: 11 }}>Tap anywhere to close</div>
+        </div>
+      )}
+      <div style={{ height: 32 }} />
+    </div>
+  );
+}
+
+// -- APP -----------------------------------------------------------------------
+function App() {
+  const savedId     = ls(LS_ID);
+  const savedName   = ls(LS_NAME);
+  const savedColor  = ls(LS_COLOR)  || USER_COLORS[0];
+  const savedAvatar = ls(LS_AVATAR) || USER_AVATARS[0];
+
+  const [userId,    setUserId]    = window._useState(savedId   || null);
+  const [userName,  setUserName]  = window._useState(savedName || "");
+  const [userColor, setUserColor] = window._useState(savedColor);
+  const [setupDone, setSetupDone] = window._useState(!!(savedId && savedName));
+  const [nameInput, setNameInput] = window._useState("");
+
+  const [shared,  setShared]  = window._useState(null);
+  const [loading, setLoading] = window._useState(true);
+  const [syncing, setSyncing] = window._useState(false);
+
+  const [view,        setView]        = window._useState("today");
+  const [activePhase, setActivePhase] = window._useState(() => getPhaseForAge(getNoodleAge(new Date()).months));
+  const [calMonth,    setCalMonth]    = window._useState(() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() }; });
+  const [selectedDay, setSelectedDay] = window._useState(null);
+  const [dayPhase,    setDayPhase]    = window._useState(() => getPhaseForAge(getNoodleAge(new Date()).months));
+  const [tipIdx,      setTipIdx]      = window._useState(0);
+  const [dogNameInput,setDogNameInput]= window._useState("Noodle");
+  const [editDogName, setEditDogName] = window._useState(false);
+  const [editNameInput,setEditNameInput] = window._useState("");
+  const [themeKey,    setThemeKey]    = window._useState(() => ls(LS_THEME) || "dachshund");
+  const [profilePhoto, setProfilePhoto] = window._useState(null); // base64 header photo
+
+  const theme = THEMES[themeKey] || THEMES.dachshund;
+  const PHASES = getPhases(theme);
+
+  // Expose persist for analytics components that can't receive it as prop easily
+  window._useEffect(() => { window._saveShared = (next) => { setShared(next); persist(next); }; }, [persist]);
+
+  const changeTheme = (key) => {
+    setThemeKey(key);
+    lsSet(LS_THEME, key);
+  };
+
+  // Tips rotation
+  window._useEffect(() => {
+    const t = setInterval(() => setTipIdx((tipI) => (tipI + 1) % TIPS.length), 5000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Subscribe to Firebase in real-time
+  window._useEffect(() => {
+    setLoading(true);
+    const unsub = subscribeToData((data) => {
+      if (data) {
+        setShared(data);
+        if (data.dogName) setDogNameInput(data.dogName);
+        if (data.profilePhoto) setProfilePhoto(data.profilePhoto);
+      } else {
+        setShared({ users: {}, completions: {}, notes: {}, dogName: "Noodle" });
+      }
+      setLoading(false);
+    });
+    return () => unsub();
+  }, []);
+
+  // Re-register returning user in shared state
+  window._useEffect(() => {
+    if (!setupDone || !userId || !shared) return;
+    if (!shared.users?.[userId]) {
+      const next = { ...shared, users: { ...(shared.users || {}), [userId]: { name: userName, color: userColor, avatar: savedAvatar, lastSeen: new Date().toISOString() } } };
+      setShared(next);
+      saveData(next).catch(console.error);
+    }
+  }, [shared, setupDone]);
+
+  const getBase = () => shared || { users: {}, completions: {}, notes: {}, dogName: dogNameInput };
+
+  const persist = window._useCallback((next) => {
+    setSyncing(true);
+    saveData(next).catch(console.error).finally(() => setSyncing(false));
+  }, []);
+
+  const addAuditLog = window._useCallback((action, details) => {
+    window._appendAuditEntry && window._appendAuditEntry({
+      ts: new Date().toISOString(),
+      uid: userId,
+      name: userName,
+      action,
+      details: details || "",
+    }).catch(console.error);
+  }, [userId, userName]);
+
+  // -- SETUP ----------------------------------------------------------------
+  const handleSetup = async () => {
+    const name = nameInput.trim();
+    if (!name) return;
+    const id       = `user_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const colorIdx = Object.keys(shared?.users || {}).length % USER_COLORS.length;
+    const color    = USER_COLORS[colorIdx];
+    const avatar   = USER_AVATARS[colorIdx];
+    setUserId(id); setUserName(name); setUserColor(color); setSetupDone(true);
+    lsSet(LS_ID, id); lsSet(LS_NAME, name); lsSet(LS_COLOR, color); lsSet(LS_AVATAR, avatar);
+    const base = getBase();
+    const next = { ...base, users: { ...(base.users || {}), [id]: { name, color, avatar, lastSeen: new Date().toISOString() } } };
+    setShared(next);
+    await saveData(next);
+  };
+
+  // -- ACTIONS ---------------------------------------------------------------
+  const handleToggleTask = window._useCallback((taskId, ds) => {
+    const base = getBase();
+    const key  = `${taskId}_${ds}_${userId}`;
+    const wasChecked = !!(base.completions || {})[key];
+    const next = { ...base, completions: { ...(base.completions || {}), [key]: !wasChecked }, users: { ...(base.users || {}), [userId]: { ...(base.users || {})[userId], lastSeen: new Date().toISOString() } } };
+    setShared(next); persist(next);
+    addAuditLog(wasChecked ? "uncheck_task" : "check_task", `taskId=${taskId} date=${ds}`);
+  }, [shared, userId, addAuditLog]);
+
+  const handleSaveMeal = window._useCallback((taskId, mealIdx, ds, time) => {
+    const base = getBase();
+    const key = mealKey(taskId, mealIdx, ds, userId);
+    const newCompletions = { ...(base.completions || {}) };
+    if (time === null) {
+      delete newCompletions[key];
+      addAuditLog("unlog_meal", `taskId=${taskId} meal=${mealIdx} date=${ds}`);
+    } else {
+      newCompletions[key] = { time: time || "", by: userId };
+      addAuditLog("log_meal", `taskId=${taskId} meal=${mealIdx} time=${time} date=${ds}`);
+    }
+    const next = { ...base, completions: newCompletions, users: { ...(base.users || {}), [userId]: { ...(base.users || {})[userId], lastSeen: new Date().toISOString() } } };
+    setShared(next); persist(next);
+  }, [shared, userId, addAuditLog]);
+
+  const handleSaveNote = window._useCallback((taskId, text) => {
+    const base = getBase();
+    const next = { ...base, notes: { ...(base.notes || {}), [taskId]: { text, by: userId, byName: userName } } };
+    setShared(next); persist(next);
+    addAuditLog("save_note", `taskId=${taskId} text="${text}"`);
+  }, [shared, userId, userName, addAuditLog]);
+
+  const handleSavePotty = window._useCallback((taskId, slotIdx, ds, data) => {
+    const base = getBase();
+    const key = pottyKey(taskId, slotIdx, ds, userId);
+    const newCompletions = { ...(base.completions || {}) };
+    if (data === null) {
+      delete newCompletions[key];
+      addAuditLog("unlog_potty", `slot=${slotIdx} date=${ds}`);
+    } else {
+      const time  = (data && typeof data === "object") ? (data.time  || "") : "";
+      const types = (data && typeof data === "object" && Array.isArray(data.types)) ? data.types : [];
+      const typesObj = {};
+      types.forEach((t, i) => { typesObj[i] = t; });
+      newCompletions[key] = { time, types: typesObj, by: userId };
+      addAuditLog("log_potty", `slot=${slotIdx} time=${time} types=${types.join("+")} date=${ds}`);
+    }
+    const next = { ...base, completions: newCompletions, users: { ...(base.users || {}), [userId]: { ...(base.users || {})[userId], lastSeen: new Date().toISOString() } } };
+    setShared(next); persist(next);
+  }, [shared, userId, addAuditLog]);
+
+  const handleChangeName = () => {
+    const name = editNameInput.trim();
+    if (!name) return;
+    setUserName(name); lsSet(LS_NAME, name);
+    const base = getBase();
+    const next = { ...base, users: { ...(base.users || {}), [userId]: { ...(base.users || {})[userId], name, lastSeen: new Date().toISOString() } } };
+    setShared(next); persist(next); setEditNameInput("");
+    addAuditLog("change_name", `new="${name}"`);
+  };
+
+  const compressImage = (file, maxWidth, quality) => new Promise((res, rej) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const scale = Math.min(1, maxWidth / Math.max(img.width, img.height));
+      const w = Math.round(img.width * scale);
+      const h = Math.round(img.height * scale);
+      const canvas = document.createElement("canvas");
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, w, h);
+      res(canvas.toDataURL("image/jpeg", quality));
+    };
+    img.onerror = rej;
+    img.src = url;
+  });
+
+  const handleSetProfilePhoto = async (file) => {
+    if (!file) return;
+    const b64 = await compressImage(file, 300, 0.7);
+    setProfilePhoto(b64);
+    const next = { ...getBase(), profilePhoto: b64 };
+    setShared(next); persist(next);
+    addAuditLog("set_profile_photo", "");
+  };
+
+  const handleAddGalleryPhoto = async (file) => {
+    if (!file) return;
+    const b64 = await compressImage(file, 800, 0.7);
+    const base = getBase();
+    const gallery = Array.isArray(base.gallery) ? base.gallery : [];
+    const newPhoto = { id: Date.now(), src: b64, caption: "", addedBy: userId, addedByName: userName, date: new Date().toISOString() };
+    const next = { ...base, gallery: [...gallery, newPhoto] };
+    setShared(next); persist(next);
+    addAuditLog("add_gallery_photo", `id=${newPhoto.id}`);
+  };
+
+  const handleDeleteGalleryPhoto = (photoId) => {
+    const base = getBase();
+    const gallery = (Array.isArray(base.gallery) ? base.gallery : []).filter(p => p.id !== photoId);
+    const next = { ...base, gallery };
+    setShared(next); persist(next);
+    addAuditLog("delete_gallery_photo", `id=${photoId}`);
+  };
+
+  const handleUpdateCaption = (photoId, caption) => {
+    const base = getBase();
+    const gallery = (Array.isArray(base.gallery) ? base.gallery : []).map(p => p.id === photoId ? { ...p, caption } : p);
+    const next = { ...base, gallery };
+    setShared(next); persist(next);
+    addAuditLog("update_caption", `id=${photoId} caption="${caption}"`);
+  };
+
+  const saveDogName = () => {
+    const name = dogNameInput.trim() || "Noodle";
+    setDogNameInput(name); setEditDogName(false);
+    const next = { ...getBase(), dogName: name };
+    setShared(next); persist(next);
+    addAuditLog("change_dog_name", `name="${name}"`);
+  };
+
+  // -- DERIVED ---------------------------------------------------------------
+  const allUsers    = Object.entries(shared?.users || {});
+  const dogName     = dogNameInput || "Noodle";
+  const comp        = shared?.completions || {};
+  const users       = shared?.users || {};
+
+  const phaseProgress = (phase, ds) => {
+    if (!allUsers.length) return 0;
+    const vis = phase.tasks.filter((t) => shouldShow(t, ds));
+    if (!vis.length) return 0;
+    const done = vis.filter((t) => {
+      if (t.category === "Feeding") return isFeedingDone(comp, users, t.id, phase.id, ds);
+      if (t.category === "Potty") return countPottyDone(comp, users, t.id, ds) > 0;
+      return allUsers.some(([uid]) => isChecked(comp, t.id, ds, uid));
+    }).length;
+    return Math.round((done / vis.length) * 100);
+  };
+
+  const dayRatio = (ds) => {
+    if (!allUsers.length) return 0;
+    const vis = PHASES.flatMap((ph) => ph.tasks.filter((t) => shouldShow(t, ds)));
+    if (!vis.length) return 0;
+    const done = vis.filter((t) => { const ph = PHASES.find((p) => p.tasks.includes(t)); 
+      if (t.category === "Feeding") return isFeedingDone(comp, users, t.id, ph?.id, ds);
+      if (t.category === "Potty") return countPottyDone(comp, users, t.id, ds) > 0;
+      return allUsers.some(([uid]) => isChecked(comp, t.id, ds, uid)); }).length;
+    return done / vis.length;
+  };
+
+  const tlProps = { shared, userId, userColor, userName, allUsers, syncing, PHASES, onToggleTask: handleToggleTask, onSaveMeal: handleSaveMeal, onSaveNote: handleSaveNote, onSavePotty: handleSavePotty };
+
+  // -- SETUP SCREEN ----------------------------------------------------------
+  if (!setupDone) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg,#3d2b1f 0%,#5c3d2a 60%,#7a5c3a 100%)", fontFamily: "Georgia, serif", padding: 24 }}>
+        <div style={{ fontSize: 64, marginBottom: 16 }}>🐾</div>
+        <h1 style={{ color: "#fdf6ec", fontSize: 24, margin: "0 0 6px", textAlign: "center" }}>Noodle Puppy Tracker</h1>
+        <p style={{ color: "#c4a477", margin: "0 0 32px", fontSize: 14, textAlign: "center" }}>Shared with your co-parent -- real-time sync!</p>
+        {loading ? <div style={{ color: "#c4a477" }}>Loading...</div> : (
+          <div style={{ background: "rgba(255,255,255,0.08)", borderRadius: 20, padding: "28px 24px", width: "100%", maxWidth: 340, border: "1px solid rgba(255,255,255,0.15)" }}>
+            {Object.values(shared?.users || {}).length > 0 && (
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ color: "#c4a477", fontSize: 11, letterSpacing: "1px", textTransform: "uppercase", marginBottom: 8 }}>Already joined</div>
+                {Object.values(shared.users).map((u) => (
+                  <div key={u.name} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <span style={{ fontSize: 20 }}>{u.avatar}</span>
+                    <span style={{ color: "#fdf6ec", fontSize: 14 }}>{u.name}</span>
+                    <div style={{ width: 8, height: 8, borderRadius: "50%", background: u.color, marginLeft: "auto" }} />
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ color: "#c4a477", fontSize: 11, letterSpacing: "1px", textTransform: "uppercase", marginBottom: 8 }}>Your name</div>
+            <input value={nameInput} onChange={(e) => setNameInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && handleSetup()} placeholder="e.g. Mom, Dad, Alex..." autoFocus style={{ width: "100%", padding: "10px 14px", borderRadius: 12, border: "none", fontFamily: "Georgia, serif", fontSize: 15, background: "rgba(255,255,255,0.12)", color: "#fdf6ec", outline: "none", boxSizing: "border-box", marginBottom: 16 }} />
+            <button onClick={handleSetup} disabled={!nameInput.trim()} style={{ width: "100%", padding: "12px", borderRadius: 12, border: "none", background: nameInput.trim() ? "#e8845c" : "rgba(255,255,255,0.1)", color: "#fff", cursor: nameInput.trim() ? "pointer" : "default", fontFamily: "Georgia, serif", fontSize: 15, fontWeight: "bold" }}>Join Tracker &#8594;</button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // -- MAIN UI ---------------------------------------------------------------
+  const today = new Date();
+  const tStr  = dateKey(today);
+  const curPhase   = PHASES.find((p) => p.id === activePhase);
+  const firstDay   = new Date(calMonth.year, calMonth.month, 1).getDay();
+  const daysInMonth = new Date(calMonth.year, calMonth.month + 1, 0).getDate();
+
+  // Age & phase tracking
+  const noodleAge = getNoodleAge(today);
+  const autoPhaseId = getPhaseForAge(noodleAge.months);
+  const autoPhase = PHASES.find(p => p.id === autoPhaseId);
+  const phaseInfo = getPhaseProgress(NOODLE_BIRTHDAY, today);
+  const isNewPhase = activePhase !== autoPhaseId;
+
+  return (
+    <div style={{ minHeight: "100vh", background: theme.pageBg, fontFamily: "Georgia, serif" }}>
+
+      {/* HEADER */}
+      <div style={{ background: theme.header, padding: "18px 18px 13px", textAlign: "center" }}>
+        <div style={{ fontSize: 32, marginBottom: 2 }}>🐾</div>
+
+        {/* Profile photo */}
+        {profilePhoto && (
+          <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}>
+            <div style={{ width: 70, height: 70, borderRadius: "50%", overflow: "hidden", border: "3px solid rgba(255,255,255,0.4)", boxShadow: "0 2px 12px rgba(0,0,0,0.3)" }}>
+              <img src={profilePhoto} alt="Noodle" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            </div>
+          </div>
+        )}
+        {editDogName ? (
+          <div style={{ display: "flex", justifyContent: "center", gap: 7, marginBottom: 3, flexWrap: "wrap" }}>
+            <input value={dogNameInput} onChange={(e) => setDogNameInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") saveDogName(); if (e.key === "Escape") setEditDogName(false); }} placeholder="Puppy's name" style={{ padding: "8px 14px", borderRadius: 18, border: "2px solid #e8845c", fontFamily: "Georgia, serif", fontSize: 15, background: "#fff8f0", minWidth: 160, outline: "none" }} />
+            <button onClick={saveDogName} style={{ background: "#e8845c", color: "#fff", border: "none", borderRadius: 18, padding: "8px 18px", cursor: "pointer", fontFamily: "Georgia, serif", fontSize: 14, fontWeight: "bold" }}>Save</button>
+            <button onClick={() => setEditDogName(false)} style={{ background: "rgba(255,255,255,0.15)", color: "#fdf6ec", border: "none", borderRadius: 18, padding: "8px 14px", cursor: "pointer", fontFamily: "Georgia, serif", fontSize: 14 }}>x</button>
+          </div>
+        ) : (
+          <h1 onClick={() => setEditDogName(true)} style={{ color: "#fdf6ec", fontSize: 19, fontWeight: "bold", margin: "0 0 2px", cursor: "pointer" }}>{dogName}'s Journey <span style={{ fontSize: 11, color: "#c4a477" }}>edit</span></h1>
+        )}
+
+        {/* Age badge */}
+        <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+          <div style={{ background: autoPhase.color, borderRadius: 12, padding: "3px 10px", display: "flex", alignItems: "center", gap: 5 }}>
+            <span style={{ fontSize: 14 }}>{autoPhase.emoji}</span>
+            <span style={{ color: "#fff", fontSize: 11, fontWeight: "bold" }}>{noodleAge.label}</span>
+          </div>
+          <div style={{ background: "rgba(255,255,255,0.12)", borderRadius: 12, padding: "3px 10px" }}>
+            <span style={{ color: "#c4a477", fontSize: 11 }}>{autoPhase.label} • {phaseInfo.daysLeft}d left</span>
+          </div>
+        </div>
+
+        {/* Phase progress bar */}
+        <div style={{ margin: "0 auto 10px", maxWidth: 260 }}>
+          <div style={{ height: 5, background: "rgba(255,255,255,0.15)", borderRadius: 3, overflow: "hidden" }}>
+            <div style={{ height: "100%", width: `${phaseInfo.pct}%`, background: autoPhase.color, borderRadius: 3, transition: "width 0.5s" }} />
+          </div>
+          <div style={{ color: "rgba(255,255,255,0.45)", fontSize: 9, marginTop: 3 }}>{phaseInfo.pct}% through {autoPhase.label}</div>
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "center", gap: 6, marginBottom: 8, flexWrap: "wrap" }}>
+          {allUsers.map(([uid, u]) => (
+            <div key={uid} style={{ display: "flex", alignItems: "center", gap: 4, background: "rgba(255,255,255,0.12)", borderRadius: 12, padding: "2px 9px" }}>
+              <span style={{ fontSize: 13 }}>{u.avatar}</span>
+              <span style={{ color: uid === userId ? userColor : "#c4a477", fontSize: 11, fontWeight: uid === userId ? "bold" : "normal" }}>{uid === userId ? `${u.name} (you)` : u.name}</span>
+              <div style={{ width: 6, height: 6, borderRadius: "50%", background: u.color }} />
+            </div>
+          ))}
+        </div>
+        <div style={{ fontSize: 11, color: "#fdf6ec", background: "rgba(255,255,255,0.1)", borderRadius: 9, padding: "5px 11px", display: "inline-block" }}>{TIPS[tipIdx]}</div>
+      </div>
+
+      {/* Phase transition banner */}
+      {isNewPhase && view === "today" && (
+        <div style={{ background: autoPhase.color, padding: "10px 16px", display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 20 }}>{autoPhase.emoji}</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ color: "#fff", fontWeight: "bold", fontSize: 13 }}>Noodle has entered {autoPhase.label}!</div>
+            <div style={{ color: "rgba(255,255,255,0.85)", fontSize: 11 }}>New tasks and routines are now active.</div>
+          </div>
+          <button onClick={() => setActivePhase(autoPhaseId)} style={{ background: "rgba(255,255,255,0.25)", border: "none", borderRadius: 10, padding: "5px 12px", color: "#fff", cursor: "pointer", fontSize: 11, fontWeight: "bold" }}>
+            Switch
+          </button>
+        </div>
+      )}
+
+      {/* NAV */}
+      <div style={{ display: "flex", background: theme.nav }}>
+        {[["today","📋","Today"],["calendar","📅","Calendar"],["gallery","📸","Gallery"],["clues","🔍","Noods Clues"],["account","⚙️","Settings"]].map(([v, icon, label]) => (
+          <button key={v} onClick={() => setView(v)} style={{ flex: 1, padding: "8px", background: v === view || (v === "calendar" && view === "day") ? theme.accent : "transparent", color: "#fff", border: "none", cursor: "pointer", fontFamily: "Georgia, serif", fontSize: 11, fontWeight: v === view || (v === "calendar" && view === "day") ? "bold" : "normal", display: "flex", flexDirection: "column", alignItems: "center", gap: 1 }}>
+            <span style={{ fontSize: 15 }}>{icon}</span><span>{label}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* TODAY */}
+      {view === "today" && (<>
+        <div style={{ display: "flex", background: theme.tabBg, overflowX: "auto" }}>
+          {PHASES.map((p) => { const prog = phaseProgress(p, tStr); const active = activePhase === p.id; const isCurrent = p.id === autoPhaseId; return (
+            <button key={p.id} onClick={() => setActivePhase(p.id)} style={{ flex: 1, minWidth: 86, padding: "8px 4px", background: active ? p.color : "transparent", color: active ? "#fff" : theme.textMid, border: "none", cursor: "pointer", fontFamily: "Georgia, serif", fontSize: 11, fontWeight: active ? "bold" : "normal", borderBottom: active ? `3px solid ${theme.nav}` : "3px solid transparent", position: "relative" }}>
+              <div style={{ fontSize: 16 }}>{p.emoji}</div>
+              <div>{p.label}{isCurrent && <span style={{ marginLeft: 3, fontSize: 8, background: active ? "rgba(255,255,255,0.3)" : p.color, color: "#fff", borderRadius: 4, padding: "1px 3px" }}>NOW</span>}</div>
+              <div style={{ height: 3, background: "rgba(0,0,0,0.1)", borderRadius: 2, margin: "2px 4px 0", overflow: "hidden" }}><div style={{ height: "100%", width: `${prog}%`, background: active ? "rgba(255,255,255,0.8)" : p.color }} /></div>
+              <div style={{ fontSize: 9, marginTop: 1, opacity: 0.8 }}>{prog}% today</div>
+            </button>
+          ); })}
+        </div>
+        <TaskList dateStr={tStr} phase={curPhase} {...tlProps} />
+      </>)}
+
+      {/* CALENDAR */}
+      {view === "calendar" && (
+        <div style={{ padding: "13px", maxWidth: 600, margin: "0 auto", background: theme.pageBg, minHeight: "100vh" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+            <button onClick={() => setCalMonth((m) => { const d = new Date(m.year, m.month - 1, 1); return { year: d.getFullYear(), month: d.getMonth() }; })} style={{ background: "#e8ddd0", border: "none", borderRadius: 8, padding: "5px 13px", cursor: "pointer", fontSize: 17 }}>{"<"}</button>
+            <div style={{ fontWeight: "bold", color: "#3d2b1f", fontSize: 15 }}>{MONTHS[calMonth.month]} {calMonth.year}</div>
+            <button onClick={() => setCalMonth((m) => { const d = new Date(m.year, m.month + 1, 1); return { year: d.getFullYear(), month: d.getMonth() }; })} style={{ background: "#e8ddd0", border: "none", borderRadius: 8, padding: "5px 13px", cursor: "pointer", fontSize: 17 }}>{">"}</button>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 2, marginBottom: 2 }}>{DAYS.map((d) => <div key={d} style={{ textAlign: "center", fontSize: 10, color: "#9a7a5a", fontWeight: "bold" }}>{d}</div>)}</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 2 }}>
+            {[...Array(firstDay).fill(null), ...Array.from({ length: daysInMonth }, (_, dayNum) => dayNum + 1)].map((d, calIdx) => {
+              if (!d) return <div key={`e${calIdx}`} />;
+              const cd = new Date(calMonth.year, calMonth.month, d);
+              const ds = dateKey(cd);
+              const ratio = dayRatio(ds);
+              const isToday = ds === tStr;
+              const fut = cd > today;
+              let bg = "#fff";
+              if (!fut && ratio > 0) bg = ratio >= 0.8 ? "#7cb87c" : ratio >= 0.4 ? "#e8c45c" : "#f0d0c0";
+              if (fut) bg = "#f8f4f0";
+              return (
+                <button key={d} onClick={() => !fut && (setSelectedDay(new Date(calMonth.year, calMonth.month, d)), setDayPhase(activePhase), setView("day"))} style={{ background: bg, border: isToday ? "2px solid #e8845c" : "1.5px solid #e8ddd0", borderRadius: 7, padding: "4px 2px", cursor: fut ? "default" : "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 1, minHeight: 38 }}>
+                  <span style={{ fontSize: 11, fontWeight: isToday ? "bold" : "normal", color: isToday ? "#e8845c" : fut ? "#c4b09a" : "#3d2b1f" }}>{d}</span>
+                  {!fut && ratio > 0 && <span style={{ fontSize: 8, color: ratio >= 0.8 ? "#fff" : "#7a5c3a", fontWeight: "bold" }}>{Math.round(ratio * 100)}%</span>}
+                  {isToday && <span style={{ width: 4, height: 4, borderRadius: "50%", background: "#e8845c", display: "block" }} />}
+                </button>
+              );
+            })}
+          </div>
+          <div style={{ display: "flex", gap: 9, marginTop: 12, justifyContent: "center", flexWrap: "wrap" }}>
+            {[["#7cb87c","80%+ done"],["#e8c45c","40-79%"],["#f0d0c0","< 40%"],["#fff","No activity"]].map(([c, l]) => (
+              <div key={l} style={{ display: "flex", alignItems: "center", gap: 4 }}><div style={{ width: 9, height: 9, borderRadius: 3, background: c, border: "1px solid #e8ddd0" }} /><span style={{ fontSize: 10, color: "#7a5c3a" }}>{l}</span></div>
+            ))}
+          </div>
+          <div style={{ height: 24 }} />
+        </div>
+      )}
+
+      {/* DAY DRILL-DOWN */}
+      {view === "day" && selectedDay && (() => {
+        const ds = dateKey(selectedDay);
+        const isToday = ds === tStr;
+        const dayLabel = selectedDay.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+        const dpo = PHASES.find((p) => p.id === dayPhase);
+        const totalVis = PHASES.flatMap((ph) => ph.tasks.filter((t) => shouldShow(t, ds)));
+        const totalDone = totalVis.filter((t) => { const ph = PHASES.find((p) => p.tasks.includes(t)); 
+          if (t.category === "Feeding") return isFeedingDone(comp, users, t.id, ph?.id, ds);
+          if (t.category === "Potty") return countPottyDone(comp, users, t.id, ds) > 0;
+          return allUsers.some(([uid]) => isChecked(comp, t.id, ds, uid)); }).length;
+        return (<>
+          <div style={{ background: theme.tabBg, padding: "8px 12px", display: "flex", alignItems: "center", gap: 9, borderBottom: `1px solid ${theme.border}` }}>
+            <button onClick={() => setView("calendar")} style={{ background: theme.border, border: "none", borderRadius: 7, padding: "4px 10px", cursor: "pointer", fontFamily: "Georgia, serif", fontSize: 12, color: theme.textDark }}>&#8592; Back</button>
+            <div style={{ flex: 1 }}><div style={{ fontWeight: "bold", color: "#3d2b1f", fontSize: 13 }}>{dayLabel}</div><div style={{ fontSize: 10, color: "#9a7a5a" }}>{totalDone}/{totalVis.length} tasks done</div></div>
+            {isToday && <span style={{ background: "#e8845c", color: "#fff", borderRadius: 7, padding: "2px 7px", fontSize: 10, fontWeight: "bold" }}>Today</span>}
+          </div>
+          <div style={{ display: "flex", background: theme.tabBg, overflowX: "auto" }}>
+            {PHASES.map((p) => { const prog = phaseProgress(p, ds); const active = dayPhase === p.id; return (
+              <button key={p.id} onClick={() => setDayPhase(p.id)} style={{ flex: 1, minWidth: 86, padding: "7px 4px", background: active ? p.color : "transparent", color: active ? "#fff" : "#7a5c3a", border: "none", cursor: "pointer", fontFamily: "Georgia, serif", fontSize: 11, fontWeight: active ? "bold" : "normal", borderBottom: active ? "3px solid #3d2b1f" : "3px solid transparent" }}>
+                <div style={{ fontSize: 15 }}>{p.emoji}</div><div>{p.label}</div><div style={{ fontSize: 9, marginTop: 1, opacity: 0.85 }}>{prog}% done</div>
+              </button>
+            ); })}
+          </div>
+          <TaskList dateStr={ds} phase={dpo} {...tlProps} />
+        </>);
+      })()}
+
+      {/* ACCOUNT */}
+      {view === "account" && (
+        <div style={{ padding: "20px 16px", maxWidth: 500, margin: "0 auto" }}>
+          <div style={{ background: theme.cardBg, borderRadius: 16, padding: "18px", marginBottom: 16, border: `1.5px solid ${theme.border}` }}>
+            <div style={{ fontSize: 11, fontWeight: "bold", letterSpacing: "1.5px", color: theme.textMid, textTransform: "uppercase", marginBottom: 14 }}>Your Profile</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+              <div style={{ width: 44, height: 44, borderRadius: "50%", background: userColor, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}>{savedAvatar}</div>
+              <div><div style={{ fontWeight: "bold", color: "#3d2b1f", fontSize: 16 }}>{userName}</div><div style={{ fontSize: 11, color: "#b09070" }}>Logged in on this device</div></div>
+            </div>
+            <div style={{ fontSize: 12, color: "#7a5c3a", marginBottom: 8, fontWeight: "bold" }}>Change your name</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input value={editNameInput} onChange={(e) => setEditNameInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && handleChangeName()} placeholder={userName} style={{ flex: 1, padding: "9px 13px", borderRadius: 10, border: "1.5px solid #e8ddd0", fontFamily: "Georgia, serif", fontSize: 14, background: "#fdf6ec", outline: "none" }} />
+              <button onClick={handleChangeName} disabled={!editNameInput.trim()} style={{ background: editNameInput.trim() ? "#e8845c" : "#e8ddd0", color: editNameInput.trim() ? "#fff" : "#b09070", border: "none", borderRadius: 10, padding: "9px 16px", cursor: editNameInput.trim() ? "pointer" : "default", fontFamily: "Georgia, serif", fontSize: 14, fontWeight: "bold" }}>Save</button>
+            </div>
+          </div>
+
+          <div style={{ background: "#fff", borderRadius: 16, padding: "18px", marginBottom: 16, border: "1.5px solid #e8ddd0" }}>
+            <div style={{ fontSize: 11, fontWeight: "bold", letterSpacing: "1.5px", color: "#7a5c3a", textTransform: "uppercase", marginBottom: 14 }}>Everyone on this tracker</div>
+            {allUsers.map(([uid, u]) => (
+              <div key={uid} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: "1px solid #f0e8d8" }}>
+                <div style={{ width: 36, height: 36, borderRadius: "50%", background: u.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>{u.avatar}</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: uid === userId ? "bold" : "normal", color: "#3d2b1f", fontSize: 14 }}>{u.name} {uid === userId && <span style={{ fontSize: 11, color: userColor }}>(you)</span>}</div>
+                  <div style={{ fontSize: 10, color: "#b09070" }}>Last active {u.lastSeen ? new Date(u.lastSeen).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "unknown"}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ background: "#fff", borderRadius: 16, padding: "18px", border: "1.5px solid #e8ddd0" }}>
+            <div style={{ fontSize: 11, fontWeight: "bold", letterSpacing: "1.5px", color: "#7a5c3a", textTransform: "uppercase", marginBottom: 14 }}>Puppy Name</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}><span style={{ fontSize: 28 }}>🐾</span><div style={{ fontWeight: "bold", color: "#3d2b1f", fontSize: 18 }}>{dogName}</div></div>
+            {editDogName ? (
+              <div style={{ display: "flex", gap: 8 }}>
+                <input value={dogNameInput} onChange={(e) => setDogNameInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") saveDogName(); if (e.key === "Escape") setEditDogName(false); }} placeholder="Puppy's name" style={{ flex: 1, padding: "9px 13px", borderRadius: 10, border: "1.5px solid #e8845c", fontFamily: "Georgia, serif", fontSize: 14, background: "#fdf6ec", outline: "none" }} />
+                <button onClick={saveDogName} style={{ background: "#e8845c", color: "#fff", border: "none", borderRadius: 10, padding: "9px 16px", cursor: "pointer", fontFamily: "Georgia, serif", fontSize: 14, fontWeight: "bold" }}>Save</button>
+                <button onClick={() => setEditDogName(false)} style={{ background: "#e8ddd0", color: "#7a5c3a", border: "none", borderRadius: 10, padding: "9px 12px", cursor: "pointer", fontSize: 14 }}>x</button>
+              </div>
+            ) : (
+              <button onClick={() => setEditDogName(true)} style={{ background: theme.tabBg, border: `1.5px solid ${theme.border}`, borderRadius: 10, padding: "9px 16px", cursor: "pointer", fontFamily: "Georgia, serif", fontSize: 13, color: theme.textMid }}>edit Change puppy name</button>
+            )}
+          </div>
+
+          {/* THEME PICKER */}
+          <div style={{ background: theme.cardBg, borderRadius: 16, padding: "18px", marginTop: 16, border: `1.5px solid ${theme.border}` }}>
+            <div style={{ fontSize: 11, fontWeight: "bold", letterSpacing: "1.5px", color: theme.textMid, textTransform: "uppercase", marginBottom: 14 }}>Color Theme</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              {Object.entries(THEMES).map(([key, t]) => {
+                const active = themeKey === key;
+                return (
+                  <button key={key} onClick={() => changeTheme(key)} style={{
+                    display: "flex", alignItems: "center", gap: 10,
+                    padding: "10px 12px", borderRadius: 12, cursor: "pointer",
+                    border: `2px solid ${active ? theme.accent : theme.border}`,
+                    background: active ? theme.accent + "15" : theme.cardBg,
+                    fontFamily: "Georgia, serif",
+                  }}>
+                    <div style={{ width: 28, height: 28, borderRadius: 8, background: t.header, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>
+                      {t.emoji}
+                    </div>
+                    <div style={{ textAlign: "left" }}>
+                      <div style={{ fontSize: 13, fontWeight: active ? "bold" : "normal", color: theme.textDark }}>{t.name}</div>
+                      {active && <div style={{ fontSize: 10, color: theme.accent }}>Active</div>}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Profile photo in account */}
+          <div style={{ background: theme.cardBg, borderRadius: 16, padding: "18px", marginTop: 16, border: `1.5px solid ${theme.border}` }}>
+            <div style={{ fontSize: 11, fontWeight: "bold", letterSpacing: "1.5px", color: theme.textMid, textTransform: "uppercase", marginBottom: 14 }}>Header Photo</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14 }}>
+              {profilePhoto ? (
+                <div style={{ width: 64, height: 64, borderRadius: "50%", overflow: "hidden", border: `3px solid ${theme.accent}`, flexShrink: 0 }}>
+                  <img src={profilePhoto} alt="Profile" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                </div>
+              ) : (
+                <div style={{ width: 64, height: 64, borderRadius: "50%", background: theme.tabBg, border: `2px dashed ${theme.border}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, flexShrink: 0 }}>🐾</div>
+              )}
+              <div>
+                <div style={{ fontSize: 13, color: theme.textDark, marginBottom: 6 }}>{profilePhoto ? "Showing in header" : "No photo set"}</div>
+                <label style={{ background: theme.accent, color: "#fff", borderRadius: 10, padding: "7px 14px", cursor: "pointer", fontSize: 12, fontFamily: "Georgia, serif", fontWeight: "bold", display: "inline-block" }}>
+                  {profilePhoto ? "Change photo" : "Upload photo"}
+                  <input type="file" accept="image/*" style={{ display: "none" }} onChange={e => e.target.files[0] && handleSetProfilePhoto(e.target.files[0])} />
+                </label>
+                {profilePhoto && <button onClick={() => { setProfilePhoto(null); const next = { ...getBase(), profilePhoto: null }; setShared(next); persist(next); }} style={{ marginLeft: 8, background: "none", border: "none", color: theme.textLight, cursor: "pointer", fontSize: 12 }}>Remove</button>}
+              </div>
+            </div>
+          </div>
+
+          {/* AUDIT LOG */}
+          <AuditLogViewer theme={theme} />
+
+          <div style={{ height: 32 }} />
+      {view === "clues" && (
+        <NoodsClues
+          shared={shared}
+          userId={userId}
+          userName={userName}
+          theme={theme}
+          PHASES={PHASES}
+        />
+      )}
+
+      {/* GALLERY */}
+      {view === "gallery" && (
+        <GalleryView
+          shared={shared}
+          userId={userId}
+          userName={userName}
+          theme={theme}
+          onAddPhoto={handleAddGalleryPhoto}
+          onDeletePhoto={handleDeleteGalleryPhoto}
+          onUpdateCaption={handleUpdateCaption}
+        />
+      )}
+    </div>
+  );
+}
+
+
+    class ErrorBoundary extends window._React.Component {
+      constructor(props) { super(props); this.state = { error: null }; }
+      static getDerivedStateFromError(e) { return { error: e }; }
+      componentDidCatch(e, info) {
+        var el = document.getElementById("err");
+        el.style.display = "block";
+        el.textContent = "Component error: " + e.message + "\n" + (e.stack||"") + "\n" + (info&&info.componentStack||"");
+      }
+      render() {
+        if (this.state.error) return null;
+        return this.props.children;
+      }
+    }
+
+    try {
+      createRoot(document.getElementById("root")).render(
+        window._React.createElement(ErrorBoundary, null, window._React.createElement(App))
+      );
+    } catch(e) {
+      var el = document.getElementById("err");
+      el.style.display = "block";
+      el.textContent = "Render error: " + e.message + "\n" + (e.stack||"");
+    }
+  </script>
+</body>
+</html>
