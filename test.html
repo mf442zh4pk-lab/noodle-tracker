@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<body>
+<h1>Test</h1>
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js";
+  import { getDatabase, ref, get } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-database.js";
+  
+  const app = initializeApp({
+    apiKey: "AIzaSyCSpTz1NNiWBjsbVvsEP_OFwGbi2xlOjns",
+    databaseURL: "https://noodle-tracker-a1840-default-rtdb.firebaseio.com",
+    projectId: "noodle-tracker-a1840",
+    appId: "1:1006750763456:web:5fb1f0195dd4371c152025"
+  });
+  
+  const db = getDatabase(app);
+  get(ref(db, "test")).then(() => {
+    document.body.innerHTML += "<p style='color:green'>Firebase works!</p>";
+  }).catch(e => {
+    document.body.innerHTML += "<p style='color:red'>Error: " + e.message + "</p>";
+  });
+</script>
+</body>
+</html>
